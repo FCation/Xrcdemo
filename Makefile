@@ -4,6 +4,7 @@ ARCHS = arm64 arm64e
 
 # 构建轴：本地默认开发构建（调试工具 + DEBUG 日志）；CI 发布显式 XRC_DEBUG=0。
 XRC_DEBUG ?= 1
+XRC_ALLOW_OFFICIAL_NET ?= 0
 
 # xrcdemo：侧载 dylib；主程序定点手术全部由 inject.py 完成（dylib 注入 / 判定桩 / BRK 站点）。
 LIBRARY_NAME = xrcdemo
@@ -36,6 +37,7 @@ xrcdemo_CFLAGS  += -fobjc-arc
 xrcdemo_CFLAGS += -Isrc/core -Isrc/gameplay -Isrc/content -Isrc/diag -Isrc/ui
 xrcdemo_CFLAGS += -Ivendor -Ivendor/fishhook
 xrcdemo_CFLAGS += -DXRC_DEBUG_BUILD=$(XRC_DEBUG)
+xrcdemo_CFLAGS += -DXRC_ALLOW_OFFICIAL_NET=$(XRC_ALLOW_OFFICIAL_NET)
 
 xrcdemo_LIBRARIES = substrate
 xrcdemo_LOGOSFLAGS = -c generator=MobileSubstrate

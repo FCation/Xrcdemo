@@ -368,7 +368,7 @@
 //      直返 0（无需动作）。⚠ 不改 sub_100844774（下载机制本体，2026-09-28 教训），
 //      仅旁路"UI/开局截流"；文件真实存在性仍由开局链亲自校验（缺文件 → 温和失败+重扫）。
 // 开关：unlock_all（①②③；默认关）、dl_ready（④；默认关，纪律见 xrc-download-stack-cocos §8）。
-// 另：锁绘分支族（四处，见下）随 unlock_all || unlock_do 联动（显示一致性）。
+// 另：锁绘分支族（五处，见下）随 unlock_all || unlock_do 联动（显示一致性）。
 #define XRC_BRK_LOCK_ALL_SITE_OFF      (0x919E5CULL)   // ① sub_100919E5C 入口
 #define XRC_BRK_LOCK_ALL_REPLAY_OFF    (0x1468138ULL)  // ⚠ 0x128/0x130 已被 cb_gate/cb_fetch 占用
 #define XRC_BRK_PLAY_GATE_SITE_OFF     (0x919874ULL)   // ② sub_100919874 入口
@@ -383,7 +383,7 @@
 //   返回值，bit32 = b4/INS）。置位 → 落 0x84F05C → 调 sub_10084F0E8 →（包==konzetsu）
 //   `img/jacket_locked_konzetsu.jpg`。⚠ 该位与"五难度全解"共用（unlockDo/unlockAll 置 b4=1
 //   ⇒ arghena 曲绘变"锁绘"）→ 本桩 ON 时恒"不跳"（普通曲绘）、OFF 时按位复现原分支。
-// 锁绘分支族（四处，均为 PC 相对条件分支 → no-replay，handler 按位复现；开关 = unlock_all ||
+// 锁绘分支族（五处，均为 PC 相对条件分支 → no-replay，handler 按位复现；开关 = unlock_all ||
 //   unlock_do）。全链证据：sub_10084F0E8 = 锁绘选择器（包 konzetsu/finale → jacket_locked_*；
 //   id grievouslady/tempestissimo → "img/jacket_locked_"+id；undyingmacula 专属；其余 →
 //   img/1080/jacket_locked_generic.jpg  @0x10137D770），触发器 = 锁态 b4 置位：
@@ -392,8 +392,9 @@
 //     不跳 = 0x8EAFB8（84EE7C 普通曲绘）。X8 = 该函数早段 919E5C 结果（存 [sp+0x18]）。
 //   · ③0x94A57C（曲目信息面板）`TBNZ X0,#0x20`→0x94A59C（锁绘）；不跳 = 84EE7C 普通。
 //   · ④0xB3F274（详情面板）`TBZ X24,#0x20`→0xB3F2A4（跳过 84F0E8 = 保留 84EE7C 普通结果，
-//     0xB3F250 已先写好普通曲绘；置位则 84F0E8 结果覆写）→ 本族唯一"置位落锁绘"的 TBZ 形态。
-//   OFF 时四处均按位复现（逐字节同原行为）；ON 时恒走普通曲绘侧。
+//     0xB3F250 已先写好普通曲绘；置位则 84F0E8 结果覆写）。
+//   · ⑤0xBBFA0C（通用锁绘覆盖）`TBZ X0,#0x20`→0xBBFAEC（跳过 generic 贴图覆写）。
+//   OFF 时五处均按位复现（逐字节同原行为）；ON 时恒走普通曲绘侧。
 #define XRC_BRK_JACKET_LOCK_SITE_OFF   (0x84EF48ULL)
 #define XRC_BRK_JACKET_LOCK_TARGET_OFF (0x84F05CULL)   // 原 TBNZ 跳转目标（同函数内）
 #define XRC_BRK_JACKET_CELL_SITE_OFF   (0x8EAFB4ULL)
@@ -402,6 +403,10 @@
 #define XRC_BRK_JACKET_INFO_TARGET_OFF (0x94A59CULL)
 #define XRC_BRK_JACKET_PANEL_SITE_OFF  (0xB3F274ULL)
 #define XRC_BRK_JACKET_PANEL_TARGET_OFF (0xB3F2A4ULL)
+// 额外的通用锁绘覆盖路径：锁态 b4 置位时把普通曲绘替换为
+// img/1080/jacket_locked_generic.jpg；全解锁时跳过这段覆写。
+#define XRC_BRK_JACKET_OVERLAY_SITE_OFF (0xBBFA0CULL)
+#define XRC_BRK_JACKET_OVERLAY_TARGET_OFF (0xBBFAECULL)
 
 // ---------------- 弧/绘制观测桩（只观测；站点语义见 XRCHook.m）----------------
 // 三处都打在**入口 +4**（第二条指令），入口的 SUB SP 照常执行 ⇒ SP 自然正确；

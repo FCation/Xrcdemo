@@ -218,8 +218,8 @@ static void doBootstrap(void) {
         @try { xrc_brk_setup(base); }           @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"brk EX: %@", e); }
         xrc_apply_switches();   // 开关统一入口（%ctor 已调过一次；此处幂等刷新）
         // 网络层装配（规则单一出处见 XRCNet.h 文件头）：
-        //   发布构建：装入**联网阻断器**——全部 http(s) 重写到保留域（编译期锁死，
-        //             下面的配置项调用会被整体忽略）；
+        //   发布构建：默认阻断；XRC_ALLOW_OFFICIAL_NET=1 时按游戏原地址发送，
+        //             下面的私服配置项仍会被忽略；
         //   开发构建：装入私服重定向（默认关，显式开启「私服」条目才生效）。
         // 私服内容的版权 / 数据处理 / 安全性由使用者自负；
         // 本插件默认的练习能力不强制绑定私服。
@@ -375,7 +375,7 @@ static void xrc_apply_switches(void) {
     @try {
         // 「全部解锁」是总闸：开 ⇒ FV/DO/链门/下载谓词一并放行（与细项 OR，细项仍可单独用）；
         // 关 ⇒ 全部逐字节恢复原行为（桩处理器在开关=0 时重放原指令，不做任何反向锁定）。
-        xrc_brk_set_unlock_own(g_cfg.unlock_own);
+        xrc_brk_set_unlock_own(g_cfg.unlock_own || g_cfg.unlock_all);
         xrc_brk_set_unlock_fv(g_cfg.unlock_fv || g_cfg.unlock_all);
         xrc_brk_set_unlock_do(g_cfg.unlock_do || g_cfg.unlock_all);
         xrc_brk_set_gate_open(g_cfg.gate_open || g_cfg.unlock_all);

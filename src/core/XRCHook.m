@@ -557,6 +557,17 @@ static void s_ap_arc_visual(void *vctx) {
 //      ⚠ 不动 sub_100844774（下载机制本体，2026-09-28 教训）；缺文件仍由开局链温和失败+重扫。
 static void s_lock_all(void *vctx) {           // lock_fv/lock_do 同款直返；总源级覆盖
     if (!atomic_load(&s_unlock_all)) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    uint64_t song = ss->__x[0];
+    uint32_t diff = (uint32_t)ss->__x[1];
+    if (!s_ap_ptr_ok(song)) return;
+    uint32_t idx = diff >= 5 ? 1 : diff;       // sub_100BDCD20
+    if (s_ap_ld8(song + 0x250 + idx) == 0) return; // 未声明的难度保留原判定
+    // x0 的五个 1 表示各难度可用；原版无谱面也返回这组位，但以 x1=1 标明缺谱。
+    // 直返时必须同时设置第二返回寄存器，否则它仍是入口的难度索引。
+    ss->__x[1] = 0;
     s_ret(0x0000000101010101ULL, vctx);
 }
 
@@ -583,11 +594,11 @@ static void s_dl_play_ready(void *vctx) {      // "需要下载/更新"谓词 �
     s_ret(0, vctx);
 }
 
-// 锁绘分支族（四处，站点/出处见 XRCProfile.h 同名块）：
+// 锁绘分支族（五处，站点/出处见 XRCProfile.h 同名块）：
 //   触发器 = 锁态打包值 bit32（b4/INS）置位 → 走 sub_10084F0E8 锁绘选择器
 //   （包 konzetsu/finale → jacket_locked_*；arghena→konzetsu 绘；其余 → jacket_locked_generic）。
 //   ⚠ 该位与"五难度全解"共用（unlockDo/unlockAll 置 b4=1 ⇒ 原本该显示锁绘的曲目锁绘状态被
-//   固化成"所有曲都触发"）→ 开关开时恒走普通曲绘侧：TBNZ 站点→不跳；TBZ 站点（B3F274）→跳。
+//   固化成"所有曲都触发"）→ 开关开时恒走普通曲绘侧：TBNZ 站点→不跳；TBZ 站点→跳。
 //   开关关 → 按位复现原分支（逐字节同原行为）。均为 PC 相对条件分支：replay=0（no-replay）。
 static void s_jacket_branch(void *vctx, int reg, uint64_t target_off, bool tbz) {
     ucontext_t *uc = (ucontext_t *)vctx;
@@ -611,6 +622,7 @@ static void s_jacket_lock(void *vctx)  { s_jacket_branch(vctx, 0,  XRC_BRK_JACKE
 static void s_jacket_cell(void *vctx)  { s_jacket_branch(vctx, 8,  XRC_BRK_JACKET_CELL_TARGET_OFF,  false); }  // 8EAFB4 TBNZ X8
 static void s_jacket_info(void *vctx)  { s_jacket_branch(vctx, 0,  XRC_BRK_JACKET_INFO_TARGET_OFF,  false); }  // 94A57C TBNZ X0
 static void s_jacket_panel(void *vctx) { s_jacket_branch(vctx, 24, XRC_BRK_JACKET_PANEL_TARGET_OFF, true);  }  // B3F274 TBZ X24
+static void s_jacket_overlay(void *vctx) { s_jacket_branch(vctx, 0, XRC_BRK_JACKET_OVERLAY_TARGET_OFF, true); } // BBFA0C TBZ X0
 
 // 桩表（site/replay/handler 同源 XRCProfile.h；加桩 = 这里加一行 + inject.py 同步）。
 // 放在分发器之前：分发器用它做"未注册兜底"（早期命中时注册可能还没跑，见 xrc_brk_setup_early）。
@@ -855,6 +867,7 @@ static const xrc_brk_entry_t k_brk_entries[] = {
     { "jacket_cell",      XRC_BRK_JACKET_CELL_SITE_OFF,     0,                                  s_jacket_cell },
     { "jacket_info",      XRC_BRK_JACKET_INFO_SITE_OFF,     0,                                  s_jacket_info },
     { "jacket_panel",     XRC_BRK_JACKET_PANEL_SITE_OFF,    0,                                  s_jacket_panel },
+    { "jacket_overlay",   XRC_BRK_JACKET_OVERLAY_SITE_OFF,  0,                                  s_jacket_overlay },
     // 弧/绘制观测桩（只观测不改行为；见本文件顶部"弧/绘制 观测桩"长注释）
     { "rpf_draw",         XRC_BRK_RPF_DRAW_SITE_OFF,        0,                                   s_rpf_draw },
     { "rpf_arctick",      XRC_BRK_RPF_ARCTICK_SITE_OFF,     0,                                   s_rpf_arctick },
@@ -1024,7 +1037,8 @@ static const xrc_feature_sites_t k_feature_sites[] = {
     { "unlock_lock",    { "lock_fv", "lock_do", "fv_gate" }, 3 },
     { "chain_guard",    { "chain_prog" }, 1 },
     { "unlock_all",     { "lock_all", "play_gate", "cond_unlock_a", "cond_unlock_b",
-                          "jacket_lock", "jacket_cell", "jacket_info", "jacket_panel" }, 8 },
+                          "jacket_lock", "jacket_cell", "jacket_info", "jacket_panel",
+                          "jacket_overlay" }, 9 },
     { "dl_ready",       { "dl_play" }, 1 },
     { "cb_free",        { "cb_ready", "cb_filehash", "cb_listhash", "cb_wipe", "cb_dispatch",
                           "cb_gate", "cb_fetch" }, 7 },

@@ -766,7 +766,11 @@ static NSString *const kNoteSpeed =
         y += [self hintLineIn:self.pane y:y text:kNoteNet];
 #else
         self.paneHint.text = @"发布构建";
+#if XRC_ALLOW_OFFICIAL_NET
+        [self statLineIn:self.pane y:y text:@"官方网络直连：下载与更新使用游戏原地址"];
+#else
         [self statLineIn:self.pane y:y text:@"未授权构建，不提供联网功能"];
+#endif
         y += xrc_theme_px(24);
 #endif
     } else if (t == 3) {   // 存储
@@ -1086,6 +1090,7 @@ static NSString *const kNoteSpeed =
                       @"全部解锁：开（FV/DO/条件/全曲/锁绘/下载谓词一并放行）",
                       @"全部解锁：关（全部恢复原行为）");
     xrc_config_t c; xrc_config_load(&c);
+    xrc_brk_set_unlock_own(c.unlock_own || c.unlock_all);
     xrc_brk_set_unlock_fv(c.unlock_fv || c.unlock_all);
     xrc_brk_set_unlock_do(c.unlock_do || c.unlock_all);
     xrc_brk_set_gate_open(c.gate_open || c.unlock_all);
@@ -1338,7 +1343,9 @@ static NSString *const kNoteSpeed =
     }
     if (self.patchLine) {
         NSString *netCap =
-#if XRC_DEV_SECTION
+#if XRC_ALLOW_OFFICIAL_NET
+            @" 官方网络✓";
+#elif XRC_DEV_SECTION
             @" 网络✓";
 #else
             @" 联网✗(已阻断)";

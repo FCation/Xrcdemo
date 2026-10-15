@@ -9,6 +9,10 @@ xrc_build_stamp.h
 xrc_patch_manifest.json
 .ccache/
 ios/
+*.ipa
+*.ips
+*.log
+builds/
 ui-mock/_*.m
 ui-mock/_*.tmp
 .claude/

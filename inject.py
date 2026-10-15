@@ -156,6 +156,7 @@ BRK_HOOKS = [
     ("jacket_cell",      0x1008EAFB4, None,        "480100b7"),  # TBNZ X8,#0x20（选曲 cell；目标 0x8EAFDC）
     ("jacket_info",      0x10094A57C, None,        "000100b7"),  # TBNZ X0,#0x20（曲目信息面板；目标 0x94A59C）
     ("jacket_panel",     0x100B3F274, None,        "980100b6"),  # TBZ  X24,#0x20（详情面板；目标 0xB3F2A4=跳过锁绘）
+    ("jacket_overlay",   0x100BBFA0C, None,        "000700b6"),  # TBZ  X0,#0x20（通用锁绘覆写；目标 0xBBFAEC=保留普通曲绘）
     # ---- 弧/绘制观测桩（只观测不改行为；handler 见 XRCHook.m"弧/绘制 观测桩"）----
     # 三处都是函数入口，首指令均为 SUB SP,SP,#N（非 PC 相对 ⇒ 可重放）。
     # ⚠ 这三条打在**入口 +4**：入口的 `SUB SP,SP,#N` 照常执行 ⇒ SP 自然正确；
@@ -198,7 +199,8 @@ FEATURES = [
     ("chain_guard",    ["chain_prog"],                                             True,  "required",
      "7.0 链查表守崩桩（恒生效；防改名/挪包 NULL 崩）"),
     ("unlock_all",     ["lock_all", "play_gate", "cond_unlock_a", "cond_unlock_b",
-                        "jacket_lock", "jacket_cell", "jacket_info", "jacket_panel"],
+                        "jacket_lock", "jacket_cell", "jacket_info", "jacket_panel",
+                        "jacket_overlay"],
                                                                                    True,  "stable",
      "全条件放行：锁态/可玩性/难度条件判定源头恒真（开关 unlockAll；锁绘族与 unlockDo 联动）"),
     ("dl_ready",       ["dl_play"],                                                True,  "stable",
@@ -881,7 +883,8 @@ def main():
     # 同款配对校验：全条件放行族（unlock_all/dl_ready 诸站）需要 dylib 侧处理器。
     # jacket_* 是 no-replay 条件分支桩：旧 dylib 无处理器时会落兜底/默认陷阱 → 必须拒配。
     if any(n in ("lock_all", "play_gate", "dl_play", "cond_unlock_a", "cond_unlock_b",
-                 "jacket_lock", "jacket_cell", "jacket_info", "jacket_panel")
+                 "jacket_lock", "jacket_cell", "jacket_info", "jacket_panel",
+                 "jacket_overlay")
            for n, _s, _r, _e in BRK_HOOKS):
         marker = b"unlock-policy v1"
         if not any(marker in open(d, "rb").read() for d in dylibs):

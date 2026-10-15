@@ -33,7 +33,9 @@ static _Atomic(bool) s_enabled = false;
 // 立即失败、不出网包（比黑洞 IP 挂到超时干净）。无开关、配置改不回来。
 #define XRC_NET_BLOCK_HOST  "xrcdemo-blocked.invalid"
 static bool s_should_rewrite(void) {
-#if !XRC_DEBUG_BUILD
+#if XRC_ALLOW_OFFICIAL_NET
+    return false;                      /* 此侧载构建：保留游戏原始请求地址 */
+#elif !XRC_DEBUG_BUILD
     return true;                       /* 发布构建恒阻断 */
 #else
     return atomic_load(&s_enabled);    /* 开发构建：显式开启才改写（私服） */
@@ -170,7 +172,10 @@ unsigned long long xrc_net_rewritten(void) { return atomic_load(&s_rewritten); }
 
 // 改写 scheme/host/port，保留 path/query/fragment
 static NSURL *s_rewrite(NSURL *url) {
-#if !XRC_DEBUG_BUILD
+#if XRC_ALLOW_OFFICIAL_NET
+    (void)url;
+    return nil;
+#elif !XRC_DEBUG_BUILD
     /* 发布构建：联网阻断——任何 http(s) 一律改写到保留域（本地资源不经本栈） */
     if (!url || !url.host) return nil;
     NSString *sch = url.scheme.lowercaseString;
@@ -623,7 +628,9 @@ void xrc_net_install(void) {
         if (!m) { xrc_logd(XRCLC_NET, @"[net] method not found"); return; }
         s_orig_init = method_getImplementation(m);
         method_setImplementation(m, (IMP)s_init_with_request);
-#if !XRC_DEBUG_BUILD
+#if XRC_ALLOW_OFFICIAL_NET
+        xrc_logi(XRCLC_NET, @"[net] installed（官方网络直连：请求地址保持原样）");
+#elif !XRC_DEBUG_BUILD
         xrc_logi(XRCLC_NET, @"[net] installed（发布构建：联网阻断模式——全部 http(s) → *.%@）",
                  @(XRC_NET_BLOCK_HOST));
 #else
