@@ -373,14 +373,14 @@ static void onAppLaunched(CFNotificationCenterRef center, void *observer,
 //（幂等，均为原子写）。
 static void xrc_apply_switches(void) {
     @try {
-        // 「全部解锁」是总闸：开 ⇒ FV/DO/链门/下载谓词一并放行（与细项 OR，细项仍可单独用）；
+        // 「全部解锁」只影响拥有/锁态/条件；按曲目下载继续走游戏原有判定。
         // 关 ⇒ 全部逐字节恢复原行为（桩处理器在开关=0 时重放原指令，不做任何反向锁定）。
         xrc_brk_set_unlock_own(g_cfg.unlock_own || g_cfg.unlock_all);
         xrc_brk_set_unlock_fv(g_cfg.unlock_fv || g_cfg.unlock_all);
         xrc_brk_set_unlock_do(g_cfg.unlock_do || g_cfg.unlock_all);
         xrc_brk_set_gate_open(g_cfg.gate_open || g_cfg.unlock_all);
         xrc_brk_set_unlock_all(g_cfg.unlock_all);
-        xrc_brk_set_dl_ready(g_cfg.unlock_all);   // 下载谓词并入总闸（"本地有谱面就能玩"的一部分）
+        xrc_brk_set_dl_ready(false);  // 旧配置中的 dlReady 也不得屏蔽缺失曲目的下载入口
     } @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"unlock flags EX: %@", e); }
     @try { xrc_brk_set_cb_bypass(g_cfg.cb_bypass); }
     @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"cb flag EX: %@", e); }

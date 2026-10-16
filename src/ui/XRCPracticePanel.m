@@ -716,14 +716,14 @@ static NSString *const kNoteSpeed =
         y += xrc_theme_px(20);
         y += [self hintLineIn:self.pane y:y text:kNoteJudge];
     } else if (t == 1) {   // 解锁
-        self.paneHint.text = @"离线/未授予时才有意义";
+        self.paneHint.text = @"解锁条件与按曲目下载分别处理";
         __weak typeof(self) ws = self;
-        // 总闸一行：开＝FV/DO/难度条件/全曲可玩/锁绘/下载谓词一体放行；关＝全部恢复原行为。
+        // 总闸不覆盖按曲目下载判定；缺少谱面时仍可显示原有下载入口。
         if (xrc_feature_present("unlock_all")) {
             self.stUnlockAll = [self toggleRowIn:self.pane y:y title:@"全部解锁"
                                               on:xrc_brk_unlock_all()
                                            block:^{ [ws toggleUnlockAll]; }
-                                            note:@"一体放行：FV/DO 五难度、难度条件、全曲可见可玩、锁绘、下载谓词；关＝逐字节恢复原行为。"];
+                                            note:@"放行 FV/DO、难度条件和锁态；按曲目下载仍由游戏判断。"];
             y += xrc_theme_px(38);
         }
         NSArray *titles = @[@"拥有链", @"FV 锁", @"DO 锁", @"链门（总闸）", @"cb 自由化"];
@@ -1087,14 +1087,14 @@ static NSString *const kNoteSpeed =
 // 总闸：翻 unlock_all 后同步联动旧细项（与 Tweak.x apply 规则一致：OR 生效、关=原行为）
 - (void)toggleUnlockAll {
     XRC_TOGGLE_SWITCH(unlock_all, xrc_brk_set_unlock_all,
-                      @"全部解锁：开（FV/DO/条件/全曲/锁绘/下载谓词一并放行）",
+                      @"全部解锁：开（保留按曲目下载）",
                       @"全部解锁：关（全部恢复原行为）");
     xrc_config_t c; xrc_config_load(&c);
     xrc_brk_set_unlock_own(c.unlock_own || c.unlock_all);
     xrc_brk_set_unlock_fv(c.unlock_fv || c.unlock_all);
     xrc_brk_set_unlock_do(c.unlock_do || c.unlock_all);
     xrc_brk_set_gate_open(c.gate_open || c.unlock_all);
-    xrc_brk_set_dl_ready(c.unlock_all);
+    xrc_brk_set_dl_ready(false);
     [self refresh];
 }
 - (void)toggleFv     { XRC_TOGGLE_SWITCH(unlock_fv,  xrc_brk_set_unlock_fv,  @"FV 锁：五难度全解", @"FV 锁：恢复原判定"); }
