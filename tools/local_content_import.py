@@ -34,6 +34,7 @@ ID_RE = re.compile(r"[a-z0-9_]{1,63}\Z")
 AFF_RE = re.compile(r"[0-4]\.aff\Z")
 MAX_SONGS = 256  # XRCHook.m publishes a fixed-size startup table.
 CHUNK = 1024 * 1024
+AFC_CHUNK = 64 * 1024
 DEVICE_ROOT = "Documents/cb/active/songs"
 DEVICE_MANIFEST = "Documents/xrc-local-content.json"
 
@@ -295,10 +296,10 @@ class AFC:
         sha, size = hashlib.sha256(), 0
         try:
             while True:
-                buf = C.create_string_buffer(CHUNK)
+                buf = C.create_string_buffer(AFC_CHUNK)
                 actual = C.c_uint32()
                 self._call("afc_file_read", [self.P, C.c_uint64, self.P, C.c_uint32, C.POINTER(C.c_uint32)],
-                           self.client, handle, buf, CHUNK, C.byref(actual))
+                           self.client, handle, buf, AFC_CHUNK, C.byref(actual))
                 if not actual.value:
                     break
                 sha.update(buf.raw[:actual.value])
@@ -317,7 +318,7 @@ class AFC:
         data = bytearray()
         try:
             while len(data) < limit + 1:
-                count = min(CHUNK, limit + 1 - len(data))
+                count = min(AFC_CHUNK, limit + 1 - len(data))
                 buf = C.create_string_buffer(count)
                 actual = C.c_uint32()
                 self._call("afc_file_read", [self.P, C.c_uint64, self.P, C.c_uint32, C.POINTER(C.c_uint32)],
@@ -332,6 +333,15 @@ class AFC:
     def remove(self, path):
         self._call("afc_remove_path", [self.P, C.c_char_p], self.client, path.encode())
 
+    def write_blocks(self, handle, stream):
+        while block := stream.read(AFC_CHUNK):
+            buffer = C.create_string_buffer(block)
+            actual = C.c_uint32()
+            self._call("afc_file_write", [self.P, C.c_uint64, self.P, C.c_uint32, C.POINTER(C.c_uint32)],
+                       self.client, handle, buffer, len(block), C.byref(actual))
+            if actual.value != len(block):
+                raise IOError("设备分块写入不完整")
+
     def upload_atomic(self, path, source):
         temporary = path + ".xrc-import.tmp"
         if self.stat(temporary):
@@ -339,13 +349,7 @@ class AFC:
         handle = self._open(temporary, 3)
         try:
             with open(source, "rb") as stream:
-                while block := stream.read(CHUNK):
-                    buffer = C.create_string_buffer(block)
-                    actual = C.c_uint32()
-                    self._call("afc_file_write", [self.P, C.c_uint64, self.P, C.c_uint32, C.POINTER(C.c_uint32)],
-                               self.client, handle, buffer, len(block), C.byref(actual))
-                    if actual.value != len(block):
-                        raise IOError(f"设备写入不完整：{temporary}")
+                self.write_blocks(handle, stream)
         finally:
             self._close(handle)
         with open(source, "rb") as stream:
@@ -454,12 +458,8 @@ def install(args):
         device.remove(temporary_device)
     handle = device._open(temporary_device, 3)
     try:
-        buffer = C.create_string_buffer(payload)
-        actual = C.c_uint32()
-        device._call("afc_file_write", [device.P, C.c_uint64, device.P, C.c_uint32, C.POINTER(C.c_uint32)],
-                     device.client, handle, buffer, len(payload), C.byref(actual))
-        if actual.value != len(payload):
-            raise IOError("设备清单写入不完整")
+        with temporary_local.open("rb") as stream:
+            device.write_blocks(handle, stream)
     finally:
         device._close(handle)
     if device.hash(temporary_device) != {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}:
