@@ -55,6 +55,32 @@
 
 当前实现最多登记 256 个曲目；ID 限定为 1–63 个小写 ASCII 字母、数字或下划线。方案按 `base.ogg` 和 `songlist` 声明的普通 `.aff` 文件映射。特殊音频命名、额外游戏资源、不同谱面命名或目录结构尚未验证。不要据此推断批量整库已支持。
 
+## 批量导入工具
+
+`tools/local_content_import.py` 可扫描多个歌曲文件夹或 ZIP（也支持一个包含多个歌曲文件夹/ZIP 的目录），对照当前 `songlist` 选择完整曲目，并在电脑上生成暂存包。输入目录名可以是 `<id>` 或 `dl_<id>`；压缩包中的歌曲目录同样适用。只有远端曲目且具备 `base.ogg` 与 songlist 所列全部难度 `.aff` 时才会收录；缺文件、重复 ID、文件头异常等会写入 `import-report.json`。个人资源不会加入源码仓库。
+
+```powershell
+python tools/local_content_import.py prepare `
+  --songlist 'C:\path\to\cb\active\songs\songlist' `
+  --source 'C:\path\to\my-songs' `
+  --output 'C:\path\to\local-content-stage'
+```
+
+需要分散输入时重复 `--source`。输出目录必须尚不存在；生成的 `Documents/cb/active/songs/dl_<id>/` 和 `Documents/xrc-local-content.json` 即为待同步内容。程序只复制本地谱面及完整音频，不修改 cb 的 `songlist`、`meta.cb` 或现有封面。`--songlist` 应从当前目标应用相同版本的 cb 取得。
+
+关闭 iPad 上的应用后，先执行只读预览；`--apply` 才会实际写入设备。`--bundle-id` 填设备上**签名后**的实际 ID，可能与打包时的 `guy.guy.guy` 不同。`--afc-dll` 指向本机的 libimobiledevice 动态库，也可设置 `XRC_AFC_LIBRARY`。
+
+```powershell
+python tools/local_content_import.py install `
+  --stage 'C:\path\to\local-content-stage' `
+  --bundle-id '<实际签名后的 Bundle ID>' `
+  --afc-dll 'C:\path\to\imobiledevice.dll'
+
+# 确认预览的歌曲数、文件数与冲突检查结果后，再加 --apply 运行同一命令。
+```
+
+传输时先检查设备 `songlist`、已有文件和已有清单；不同内容的目标文件会被拒绝覆盖。缺失文件写入临时路径、读回校验并改名，全部资源成功后才合并发布清单。工具将旧清单备份到暂存目录中的 `device-manifest-before-<哈希>.json`。侧载、文件复制或清单更新后必须重新启动应用，让插件重新验证并建立原生 `Documents/dl/` 映射。批量工具仅完成文件准备与传输，曲目实际可玩性仍需逐首确认。
+
 ## 评级 ? 的修正
 
 `sub_100919E5C(song, selectedDifficulty)` 返回当前所选难度的锁态和显示标志。五个返回字节不是 PST/PRS/FTR/BYD/ETR 五个难度槽。
