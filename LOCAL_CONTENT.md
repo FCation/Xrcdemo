@@ -57,16 +57,15 @@
 
 ## 批量导入工具
 
-`tools/local_content_import.py` 可扫描多个歌曲文件夹或 ZIP（也支持一个包含多个歌曲文件夹/ZIP 的目录），对照当前 `songlist` 选择完整曲目，并在电脑上生成暂存包。输入目录名可以是 `<id>` 或 `dl_<id>`；压缩包中的歌曲目录同样适用。只有远端曲目且具备 `base.ogg` 与 songlist 所列全部难度 `.aff` 时才会收录；缺文件、重复 ID、文件头异常等会写入 `import-report.json`。个人资源不会加入源码仓库。
+`tools/local_content_import.py` 可以直接接收整棵 `songs` 目录，自动读取其中的 `songlist`，逐个扫描子目录并生成暂存包。它也接受单曲文件夹、多个文件夹或 ZIP；这些输入没有自带 `songlist` 时，用 `--songlist` 指定当前版本的文件。曲目目录名可以是 `<id>` 或 `dl_<id>`。只有远端曲目且具备 `base.ogg` 与 songlist 所列全部难度 `.aff` 时才会收录；缺文件、重复 ID、文件头异常等会写入 `import-report.json`。个人资源不会加入源码仓库。
 
 ```powershell
 python tools/local_content_import.py prepare `
-  --songlist 'C:\path\to\cb\active\songs\songlist' `
-  --source 'C:\path\to\my-songs' `
+  --source 'C:\path\to\cb\active\songs' `
   --output 'C:\path\to\local-content-stage'
 ```
 
-需要分散输入时重复 `--source`。输出目录必须尚不存在；生成的 `Documents/cb/active/songs/dl_<id>/` 和 `Documents/xrc-local-content.json` 即为待同步内容。程序只复制本地谱面及完整音频，不修改 cb 的 `songlist`、`meta.cb` 或现有封面。`--songlist` 应从当前目标应用相同版本的 cb 取得。
+需要分散输入时重复 `--source`。如果传入的是单曲目录或 ZIP，可另外加 `--songlist 'C:\path\to\cb\active\songs\songlist'`。输出目录必须尚不存在；生成的 `Documents/cb/active/songs/dl_<id>/` 和 `Documents/xrc-local-content.json` 即为待同步内容。程序只复制本地谱面及完整音频，不修改 cb 的 `songlist`、`meta.cb` 或现有封面。`songlist` 应与目标应用的 cb 版本一致。
 
 关闭 iPad 上的应用后，先执行只读预览；`--apply` 才会实际写入设备。`--bundle-id` 填设备上**签名后**的实际 ID，可能与打包时的 `guy.guy.guy` 不同。`--afc-dll` 指向本机的 libimobiledevice 动态库，也可设置 `XRC_AFC_LIBRARY`。
 

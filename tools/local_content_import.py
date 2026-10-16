@@ -156,6 +156,28 @@ def discover(sources):
             raise ValueError(f"输入必须是目录或 ZIP：{source}")
 
 
+def resolve_songlist(explicit, sources):
+    if explicit:
+        path = Path(explicit).resolve()
+        return path, path.read_bytes()
+    found = {}
+    for source in sources:
+        if not source.is_dir():
+            continue
+        for relative in ("songlist", "songs/songlist", "active/songs/songlist",
+                         "cb/active/songs/songlist", "Documents/cb/active/songs/songlist"):
+            path = source / relative
+            if path.is_file():
+                raw = path.read_bytes()
+                found[hashlib.sha256(raw).hexdigest()] = (path, raw)
+    if not found:
+        raise ValueError("输入目录中未找到 songlist；请传入整个 songs 目录，或用 --songlist 指定文件")
+    if len(found) > 1:
+        paths = ", ".join(str(path) for path, _ in found.values())
+        raise ValueError(f"输入目录包含不同版本的 songlist，请用 --songlist 明确指定：{paths}")
+    return next(iter(found.values()))
+
+
 def stage(args):
     output = Path(args.output).resolve()
     if output.exists():
@@ -163,7 +185,7 @@ def stage(args):
     source_paths = [Path(p).resolve() for p in args.source]
     if any(output == p or output in p.parents or p in output.parents for p in source_paths):
         raise ValueError("输出目录与输入目录不能相互包含")
-    songlist_raw = Path(args.songlist).read_bytes()
+    songlist_path, songlist_raw = resolve_songlist(args.songlist, source_paths)
     songs = load_songlist(songlist_raw)
     output.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(tempfile.mkdtemp(prefix=output.name + ".partial-", dir=output.parent))
@@ -216,7 +238,8 @@ def stage(args):
         manifest = {"schema": 1, "contentVersion": VERSION, "songs": accepted}
         manifest_path = temp / "Documents" / "xrc-local-content.json"
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        report = {"songlist_sha256": hashlib.sha256(songlist_raw).hexdigest(),
+        report = {"songlist": str(songlist_path),
+                  "songlist_sha256": hashlib.sha256(songlist_raw).hexdigest(),
                   "included": [row["id"] for row in accepted], "skipped": skipped,
                   "total_bytes": sum(info["bytes"] for row in accepted for info in row["files"].values())}
         (temp / "import-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -487,8 +510,8 @@ def main():
     parser = argparse.ArgumentParser(description="7.0.255 本地曲目批量暂存与 iPad 导入")
     actions = parser.add_subparsers(dest="action", required=True)
     prep = actions.add_parser("prepare", help="扫描目录/ZIP，生成可导入暂存包")
-    prep.add_argument("--songlist", required=True, help="当前 7.0.255 cb/active/songs/songlist 路径")
-    prep.add_argument("--source", action="append", required=True, help="歌曲目录或 ZIP；可重复")
+    prep.add_argument("--songlist", help="可选：当前 7.0.255 songlist；songs 根目录输入时自动查找")
+    prep.add_argument("--source", action="append", required=True, help="整个 songs 目录、单曲目录或 ZIP；可重复")
     prep.add_argument("--output", required=True, help="新暂存目录，不能已存在")
     prep.set_defaults(run=stage)
     sync = actions.add_parser("install", help="预览或传输暂存包到已连接 iPad")
