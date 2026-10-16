@@ -312,7 +312,8 @@ static void s_cb_fetch_observe(void *vctx) {
 // 锁状态函数 `sub_100919E5C` 内的两个专属子分支（各自唯一调用方 = 锁态函数自身）：
 //   · 0x100991508 = FV 五曲 fast path（硬编码集合经 song+0x257 开关；id 改名后该路不再命中）；
 //   · 0x100AAE50C = DO(konzetsu) 分支（读存档 insightPrechallengeRevealIndex；未推进时只放行 FTR/INS）。
-// 二者都返回五字节打包的难度锁态（b0..b4 = PST/PRS/FTR/BYD/INS，0 = 解锁，1 = 锁定）。
+// 二者返回当前选中难度的锁态标志，不能把 b0..b4 当成五个难度槽。
+// 消费证据：B5CC84 读取 bit24 决定是否显示评级（置位显示 ?），84EF48 读 bit32 决定锁绘。
 // 原生 FV 分支在门控放行时明确返回 x0=0、x1=0；DO/普通曲绘也在 b4=1 时显示锁绘。
 // 旧桩误返 0x0101010101，把所有难度标为锁定。
 static void s_lock_clear(void *vctx, uint64_t locked_bits) {
@@ -552,12 +553,58 @@ static void s_ap_arc_visual(void *vctx) {
 // ---------------- 全条件放行（unlock_all / dl_ready；站点/出处见 XRCProfile.h 同名块）----------------
 // 目标（第一性原理）：**本地存在合法谱面（该难度在 songlist 声明，song+0x250[idx]!=0）时，
 // 任何"条件"不得阻止其可见、可游玩**。四处判定源头：
-//   ① sub_100919E5C 锁态总源（44 调用点：选曲 cell/曲绘/横幅/世界/包页）→ 已声明难度的锁态字节清零；
+//   ① sub_100919E5C 锁态总源（44 调用点：选曲 cell/曲绘/横幅/世界/包页）→ 当前难度已声明时锁态标志全清零；
 //   ② sub_100919874 可玩性总源（70 调用点：start 钮/开局链）→ 直返 1（放行）。
 //      ⚠ 仅当该难度"已声明"才放行：没有谱面的难度不硬开（开局会 load 失败 __cxa_throw）。
 //   ③ sub_100BDC5A8 / sub_100BDC8D4 难度条件求值（解锁条件对象家族）→ 恒真（1）。
 //   ④ sub_100850308 下载"需动作"谓词（仅 2 调用点：start 钮图标/开局弹窗分流）→ 直返 0。
 //      ⚠ 不动 sub_100844774（下载机制本体，2026-09-28 教训）；缺文件仍由开局链温和失败+重扫。
+typedef struct { char id[64]; uint32_t len, mask; } xrc_local_song_t;
+static xrc_local_song_t s_local_songs[256];
+static _Atomic(uint32_t) s_local_song_count, s_local_state_hits;
+
+// 仅由启动线程写表；release 发布后 SIGTRAP 处理器只读。
+bool xrc_brk_local_content_add(const char *id, uint32_t mask) {
+    size_t len = id ? strnlen(id, 64) : 0;
+    uint32_t n = atomic_load(&s_local_song_count);
+    if (!len || len >= 64 || n >= 256 || !(mask & 0x1Fu)) return false;
+    memcpy(s_local_songs[n].id, id, len);
+    s_local_songs[n].len = (uint32_t)len;
+    s_local_songs[n].mask = mask;
+    atomic_store_explicit(&s_local_song_count, n + 1, memory_order_release);
+    return true;
+}
+
+static void s_local_download_state(void *vctx) {
+    if (!atomic_load(&s_unlock_all)) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    uint64_t song = ss->__x[1]; // sub_100844774(manager,song,diff,flag)
+    if (!s_ap_ptr_ok(song)) return;
+    uint32_t idx = (uint32_t)ss->__x[2];
+    if (idx >= 5) idx = 1;
+    uint8_t tag = s_ap_ld8(song + 23);
+    uint64_t ptr = song, len = tag;
+    if (tag & 0x80u) {
+        ptr = *(volatile uint64_t *)song;
+        len = *(volatile uint64_t *)(song + 8);
+        if (!s_ap_ptr_ok(ptr)) return;
+    }
+    if (!len || len >= 64) return;
+    uint32_t n = atomic_load_explicit(&s_local_song_count, memory_order_acquire);
+    for (uint32_t i = 0; i < n; i++) {
+        const xrc_local_song_t *entry = &s_local_songs[i];
+        if (entry->len != len || !(entry->mask & (1u << idx))) continue;
+        uint32_t j = 0;
+        for (; j < len; j++) if (s_ap_ld8(ptr + j) != (uint8_t)entry->id[j]) break;
+        if (j != len) continue;
+        atomic_fetch_add(&s_local_state_hits, 1);
+        s_ret(0, vctx); // 原生资源查询：0=就绪。缺失曲目照常重放原逻辑。
+        return;
+    }
+}
+
 static void s_lock_all(void *vctx) {           // 已声明难度解锁；未声明难度保留锁定
     if (!atomic_load(&s_unlock_all)) return;
     ucontext_t *uc = (ucontext_t *)vctx;
@@ -568,11 +615,8 @@ static void s_lock_all(void *vctx) {           // 已声明难度解锁；未声
     if (!s_ap_ptr_ok(song)) return;
     uint32_t idx = diff >= 5 ? 1 : diff;       // sub_100BDCD20
     if (s_ap_ld8(song + 0x250 + idx) == 0) return; // 未声明的难度保留原判定
-    uint64_t locked = 0;
-    for (uint32_t i = 0; i < 5; i++) {
-        if (s_ap_ld8(song + 0x250 + i) == 0) locked |= 1ULL << (8 * i);
-    }
-    s_lock_clear(vctx, locked);
+    // 五字节是当前难度的锁态/显示标志。缺少另一难度不能设置 bit24（隐藏评级）。
+    s_lock_clear(vctx, 0);
 }
 
 static void s_play_gate(void *vctx) {          // 可玩性总源：声明过难度 → 恒放行
@@ -593,7 +637,128 @@ static void s_cond_unlock(void *vctx) {        // BDC5A8/BDC8D4 共用：解锁�
     s_ret(1, vctx);
 }
 
+// 选曲页点击入口 (C11860 -> 850308) 采样；SIGTRAP 内只写原子值。
+// 谓词返回保持原样，供主线程定时器记录图标点击与下载弹窗的分流状态。
+static _Atomic(uint32_t) s_dl_click_seq;
+static _Atomic(uint32_t) s_dl_click_diff, s_dl_click_mode, s_dl_click_flag;
+static _Atomic(uint32_t) s_dl_click_remote, s_dl_click_meta;
+static _Atomic(uint64_t) s_dl_click_diffs;
+static _Atomic(uint64_t) s_dl_click_song;
+static _Atomic(bool) s_dl_click_pending;
+static _Atomic(uint32_t) s_dl_click_result_seq, s_dl_click_result;
+static _Atomic(uint32_t) s_dl_gate_a_seq, s_dl_gate_a_result;
+static _Atomic(uint32_t) s_dl_gate_b_seq, s_dl_gate_b_result;
+static _Atomic(uint32_t) s_dl_gate_b_bypass_seq;
+static _Atomic(uint32_t) s_dl_gate_b_pending, s_dl_gate_b_song_match, s_dl_gate_b_diff_match;
+
+void xrc_brk_download_diag_report(void) {
+    static uint32_t local_reported;
+    uint32_t local_hits = atomic_load(&s_local_state_hits);
+    if (local_hits != local_reported) {
+        local_reported = local_hits;
+        xrc_logi(XRCLC_DL, @"[local.state] readyHits=%u songs=%u all=%d", local_hits,
+                 atomic_load(&s_local_song_count), (int)atomic_load(&s_unlock_all));
+    }
+    static uint32_t reported, reported_result, reported_gate_a, reported_gate_b;
+    uint32_t seq = atomic_load(&s_dl_click_seq);
+    uint32_t result_seq = atomic_load(&s_dl_click_result_seq);
+    uint32_t gate_a_seq = atomic_load(&s_dl_gate_a_seq);
+    uint32_t gate_b_seq = atomic_load(&s_dl_gate_b_seq);
+    if (seq == reported && result_seq == reported_result &&
+        gate_a_seq == reported_gate_a && gate_b_seq == reported_gate_b) return;
+    reported = seq;
+    reported_result = result_seq;
+    reported_gate_a = gate_a_seq;
+    reported_gate_b = gate_b_seq;
+    xrc_logi(XRCLC_DL, @"[dl.click] seq=%u resultSeq=%u result=%u gateASeq=%u gateA=%u gateBSeq=%u gateB=%u bypass=%u pending=%u songMatch=%u diffMatch=%u diff=%u mode=%u flag=%u remote=%u meta=%u diffbytes=%010llx all=%d dl=%d",
+             seq, result_seq, atomic_load(&s_dl_click_result),
+             gate_a_seq, atomic_load(&s_dl_gate_a_result),
+             gate_b_seq, atomic_load(&s_dl_gate_b_result),
+             atomic_load(&s_dl_gate_b_bypass_seq),
+             atomic_load(&s_dl_gate_b_pending), atomic_load(&s_dl_gate_b_song_match),
+             atomic_load(&s_dl_gate_b_diff_match),
+             atomic_load(&s_dl_click_diff), atomic_load(&s_dl_click_mode),
+             atomic_load(&s_dl_click_flag), atomic_load(&s_dl_click_remote),
+             atomic_load(&s_dl_click_meta), (unsigned long long)atomic_load(&s_dl_click_diffs),
+             (int)atomic_load(&s_unlock_all), (int)atomic_load(&s_dl_ready));
+}
+
+// 0xC11864：调用 sub_100850308 后、读 remote 标志前的原指令 LDRB W8,[X23,#0x1C0]。
+// 只采返回值，然后让重放跳板执行原指令。
+static void s_dl_click_result_observe(void *vctx) {
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    uint32_t result = (uint32_t)uc->uc_mcontext->__ss.__x[0];
+    atomic_store(&s_dl_click_result, result);
+    uint32_t diff = atomic_load(&s_dl_click_diff);
+    uint64_t diffs = atomic_load(&s_dl_click_diffs);
+    atomic_store(&s_dl_click_pending,
+        result == 1 && diff < 5 && atomic_load(&s_dl_click_remote) == 1 &&
+        ((diffs >> (8 * diff)) & 0xFFu) != 0);
+    atomic_fetch_add(&s_dl_click_result_seq, 1);
+}
+
+// sub_1008468C8 入口的两道下载弹窗许可门；原条件分支逐字复现。
+static void s_dl_gate_a_observe(void *vctx) {
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    uint32_t value = (uint32_t)ss->__x[0];
+    atomic_store(&s_dl_gate_a_result, value);
+    atomic_fetch_add(&s_dl_gate_a_seq, 1);
+    if (value == 0) atomic_store(&s_dl_click_pending, false);
+    uint64_t mb = atomic_load(&s_main_base);
+    uint64_t pc = (uint64_t)__darwin_arm_thread_state64_get_pc(*ss);
+    __darwin_arm_thread_state64_set_pc_fptr(*ss,
+        (void *)(mb && value == 0 ? mb + 0x8469A0ULL : pc + 4));
+}
+
+static void s_dl_gate_b_observe(void *vctx) {
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    uint32_t value = (uint32_t)ss->__x[0];
+    atomic_store(&s_dl_gate_b_result, value);
+    atomic_fetch_add(&s_dl_gate_b_seq, 1);
+    // 仅放行本次 Start 点击、同一曲目与难度的远端谱面下载弹窗。
+    // [SP+0x128] 在 sub_1008468C8 的 0x846910 保存了入参 song；X22 保存 diff。
+    uint64_t sp = (uint64_t)__darwin_arm_thread_state64_get_sp(*ss);
+    uint64_t song = *(volatile uint64_t *)(sp + 0x128);
+    bool pending = atomic_exchange(&s_dl_click_pending, false);
+    bool song_match = song == atomic_load(&s_dl_click_song);
+    bool diff_match = (uint32_t)ss->__x[22] == atomic_load(&s_dl_click_diff);
+    atomic_store(&s_dl_gate_b_pending, pending);
+    atomic_store(&s_dl_gate_b_song_match, song_match);
+    atomic_store(&s_dl_gate_b_diff_match, diff_match);
+    bool bypass = pending && value == 0 && atomic_load(&s_unlock_all) &&
+        song_match && diff_match;
+    if (bypass) atomic_fetch_add(&s_dl_gate_b_bypass_seq, 1);
+    uint64_t mb = atomic_load(&s_main_base);
+    uint64_t pc = (uint64_t)__darwin_arm_thread_state64_get_pc(*ss);
+    __darwin_arm_thread_state64_set_pc_fptr(*ss,
+        (void *)(mb && (value & 1u) == 0 && !bypass ? mb + 0x8469A0ULL : pc + 4));
+}
+
 static void s_dl_play_ready(void *vctx) {      // "需要下载/更新"谓词 → 无需动作
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (uc && uc->uc_mcontext) {
+        __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+        uint64_t mb = atomic_load(&s_main_base);
+        uint64_t lr = (uint64_t)__darwin_arm_thread_state64_get_lr(*ss);
+        if (mb && lr == mb + 0xC11864ULL && s_ap_ptr_ok(ss->__x[0])) {
+            uint64_t song = ss->__x[0], diffs = 0;
+            for (uint32_t i = 0; i < 5; i++)
+                diffs |= (uint64_t)s_ap_ld8(song + 0x250 + i) << (8 * i);
+            atomic_store(&s_dl_click_diff, (uint32_t)ss->__x[1]);
+            atomic_store(&s_dl_click_song, song);
+            atomic_store(&s_dl_click_mode, (uint32_t)ss->__x[2]);
+            atomic_store(&s_dl_click_flag, (uint32_t)ss->__x[3]);
+            atomic_store(&s_dl_click_remote, s_ap_ld8(song + 0x1C0));
+            atomic_store(&s_dl_click_meta, s_ap_ld8(song + 0x256));
+            atomic_store(&s_dl_click_diffs, diffs);
+            atomic_fetch_add(&s_dl_click_seq, 1);
+        }
+    }
     if (!atomic_load(&s_dl_ready)) return;
     s_ret(0, vctx);
 }
@@ -865,6 +1030,10 @@ static const xrc_brk_entry_t k_brk_entries[] = {
     { "lock_all",         XRC_BRK_LOCK_ALL_SITE_OFF,        XRC_BRK_LOCK_ALL_REPLAY_OFF,        s_lock_all },
     { "play_gate",        XRC_BRK_PLAY_GATE_SITE_OFF,       XRC_BRK_PLAY_GATE_REPLAY_OFF,       s_play_gate },
     { "dl_play",          XRC_BRK_DL_PLAY_SITE_OFF,         XRC_BRK_DL_PLAY_REPLAY_OFF,         s_dl_play_ready },
+    { "dl_click_result",  XRC_BRK_DL_CLICK_RESULT_SITE_OFF, XRC_BRK_DL_CLICK_RESULT_REPLAY_OFF, s_dl_click_result_observe },
+    { "dl_gate_a",        XRC_BRK_DL_GATE_A_SITE_OFF,       0,                                  s_dl_gate_a_observe },
+    { "dl_gate_b",        XRC_BRK_DL_GATE_B_SITE_OFF,       0,                                  s_dl_gate_b_observe },
+    { "local_dl_state",   XRC_BRK_LOCAL_DL_STATE_SITE_OFF, XRC_BRK_LOCAL_DL_STATE_REPLAY_OFF, s_local_download_state },
     { "cond_unlock_a",    XRC_BRK_COND_UNLOCK_A_SITE_OFF,   XRC_BRK_COND_UNLOCK_A_REPLAY_OFF,   s_cond_unlock },
     { "cond_unlock_b",    XRC_BRK_COND_UNLOCK_B_SITE_OFF,   XRC_BRK_COND_UNLOCK_B_REPLAY_OFF,   s_cond_unlock },
     { "jacket_lock",      XRC_BRK_JACKET_LOCK_SITE_OFF,     0,                                  s_jacket_lock },
@@ -1044,6 +1213,7 @@ static const xrc_feature_sites_t k_feature_sites[] = {
                           "jacket_lock", "jacket_cell", "jacket_info", "jacket_panel",
                           "jacket_overlay" }, 9 },
     { "dl_ready",       { "dl_play" }, 1 },
+    { "local_content",  { "local_dl_state" }, 1 },
     { "cb_free",        { "cb_ready", "cb_filehash", "cb_listhash", "cb_wipe", "cb_dispatch",
                           "cb_gate", "cb_fetch" }, 7 },
     { "autoplay",       { "ap_ln_state", "ap_ln_tick", "ap_note_win", "ap_arctap_win",

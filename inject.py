@@ -146,6 +146,11 @@ BRK_HOOKS = [
     ("lock_all",         0x100919E5C, 0x101468138, "ffc302d1"),  # SUB SP,#0xB0（锁态总源入口）
     ("play_gate",        0x100919874, 0x101468140, "ff8301d1"),  # SUB SP,#0x60（可玩性总源入口）
     ("dl_play",          0x100850308, 0x101468148, "f657bda9"),  # STP X22,X21,[SP,#-0x30]!（需动作谓词入口）
+    # 下载点击诊断与定向分流：谓词返回值 + 下载弹窗两道门。
+    ("dl_click_result",  0x100C11864, 0x101468160, "e8024739"),  # LDRB W8,[X23,#0x1C0]
+    ("dl_gate_a",        0x10084691C, None,        "20040034"),  # CBZ W0,0x8469A0
+    ("dl_gate_b",        0x100846928, None,        "c0030036"),  # TBZ W0,#0,0x8469A0
+    ("local_dl_state",   0x100844774, 0x101468168, "ff4302d1"),  # SUB SP,#0x90：仅完整导入曲目返就绪
     ("cond_unlock_a",    0x100BDC5A8, 0x101468150, "ff4302d1"),  # SUB SP,#0x90（难度条件求值 A）
     ("cond_unlock_b",    0x100BDC8D4, 0x101468158, "ff8301d1"),  # SUB SP,#0x60（难度条件求值 B）
     # 锁绘分支族（五处，no-replay：PC 相对条件分支，handler 按位复现；开关 = unlockAll || unlockDo）。
@@ -205,6 +210,10 @@ FEATURES = [
      "全条件放行：锁态/可玩性/难度条件判定源头恒真（开关 unlockAll；锁绘族与 unlockDo 联动）"),
     ("dl_ready",       ["dl_play"],                                                True,  "stable",
      "本地内容放行：下载'需动作'谓词恒 0（开关 dlReady 默认关；文件真实存在性仍由开局链亲验）"),
+    ("download_diag",  ["dl_click_result", "dl_gate_a", "dl_gate_b"],           False, "debug",
+     "下载点击诊断：记录谓词与本地许可门；全部解锁时对本次远端谱面点击定向放行第二道门"),
+    ("local_content",  ["local_dl_state"],                                     False, "debug",
+     "经清单哈希核对并映射到原生 dl 路径的本地曲目返回资源就绪"),
     ("cb_free",        ["cb_ready", "cb_filehash", "cb_listhash", "cb_wipe", "cb_dispatch",
                         "cb_gate", "cb_fetch"],                                    True, "stable",
      "cb 自由化：校验结论恒通过且保持成功路径回填；清树调用直返；就绪恒真；更新错码分发/更新强制门/远端更新指令直返（无 meta.cb 亦可进入）"),

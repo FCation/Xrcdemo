@@ -58,6 +58,8 @@ bool xrc_brk_unlock_do(void);
 bool xrc_brk_gate_open(void);
 bool xrc_brk_unlock_all(void);
 bool xrc_brk_dl_ready(void);
+void xrc_brk_download_diag_report(void); // 主线程定时器记录点击下载分流的快照
+bool xrc_brk_local_content_add(const char *song_id, uint32_t difficulty_mask);
 
 // ---- cb 验证链开关（功能账 §3）----
 // 置真后：就绪位恒真、逐文件与三清单校验恒通过、清树直返（cb 自由化）。

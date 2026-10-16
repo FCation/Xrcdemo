@@ -244,6 +244,7 @@ static void doBootstrap(void) {
         // 而 cocos2d 的游戏循环不服务 default mode —— 对局中轮询会整个停摆
         //（player 变化检测与位置兜底失效），挂 common modes 才能全程跑。
         NSTimer *xrc_tick = [NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+            xrc_brk_download_diag_report(); // SIGTRAP 中采样，主线程中落盘
 #if XRC_DEBUG_BUILD
             // applog 采集（开发构建）：日志档位 = 详细 且类别含 om 时落盘。
             if ((xrc_log_cats() & XRCLC_OM) && xrc_log_level() >= XRCLL_DEBUG) {
@@ -431,6 +432,8 @@ static void xrc_apply_switches(void) {
             xrc_logi(XRCLC_BOOT, @"cb 外置：开关关闭，未做迁移 ｜ %@", xrc_store_cb_status());
         }
     } @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"store EX: %@", e); }
+    @try { xrc_store_prepare_local_content(); }
+    @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"local content EX: %@", e); }
     CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(), NULL,
         onAppLaunched,
         (CFStringRef)UIApplicationDidFinishLaunchingNotification,

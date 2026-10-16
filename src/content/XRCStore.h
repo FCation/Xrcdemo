@@ -24,6 +24,7 @@
 //   · 两处都有              → 浅层合并（保留 Documents 侧同名）→ 软链
 // 返回：0 = 本次完成迁移；1 = 已是外置态（跳过）；-1 = 失败（保持原状，日志有原因）。
 int xrc_store_install(void);
+void xrc_store_prepare_local_content(void);
 
 // 状态查询（面板 / 诊断行）
 BOOL      xrc_store_cb_external(void);   // cb 根当前是否已落在 Documents（软链且指向正确）

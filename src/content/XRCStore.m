@@ -6,6 +6,8 @@
 
 #import "XRCStore.h"
 #include "XRCLog.h"
+#include "XRCHook.h"
+#include <CommonCrypto/CommonDigest.h>
 
 #include <errno.h>
 #include <limits.h>
@@ -192,4 +194,94 @@ NSString *xrc_store_cb_status(void) {
         return [NSString stringWithFormat:@"cb 软链指向异常 → %@", t ?: @"(读不到)"];
     }
     return @"cb 在容器内：Library/Application Support/cb";
+}
+
+static NSString *s_local_sha256(NSData *data) {
+    if (!data || data.length > UINT32_MAX) return nil;
+    unsigned char bytes[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(data.bytes, (CC_LONG)data.length, bytes);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:64];
+    for (size_t i = 0; i < sizeof(bytes); i++) [hex appendFormat:@"%02x", bytes[i]];
+    return hex;
+}
+
+// 原生远程谱面/音频不是 cb/active/songs/dl_* 的预览读取路径：
+// 84D708 -> 8429D0 -> 84292C => FileUtils::getWritablePath()+"dl/"+id+"_"+diff。
+// 开局完整音频 84DD38 的键为 id（不同于 84DAC4 构造的 id+"_"）。
+// 使用相对软链可跨侧载容器 UUID 迁移。
+void xrc_store_prepare_local_content(void) {
+    NSString *docs = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"];
+    NSData *raw = [NSData dataWithContentsOfFile:[docs stringByAppendingPathComponent:@"xrc-local-content.json"]];
+    if (!raw) return;
+    NSDictionary *manifest = [NSJSONSerialization JSONObjectWithData:raw options:0 error:nil];
+    if (![manifest isKindOfClass:NSDictionary.class] || [manifest[@"schema"] intValue] != 1 ||
+        ![manifest[@"contentVersion"] isEqual:@"7.0.255"] ||
+        ![manifest[@"songs"] isKindOfClass:NSArray.class]) {
+        xrc_logw(XRCLC_CB, @"[local] 导入清单格式/版本不匹配");
+        return;
+    }
+    NSString *active = [docs stringByAppendingPathComponent:@"cb/active"];
+    NSData *songData = [NSData dataWithContentsOfFile:[active stringByAppendingPathComponent:@"songs/songlist"]];
+    NSDictionary *songList = songData ? [NSJSONSerialization JSONObjectWithData:songData options:0 error:nil] : nil;
+    NSArray *songs = [songList isKindOfClass:NSDictionary.class] ? songList[@"songs"] : nil;
+    if (![songs isKindOfClass:NSArray.class]) return;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *nativeRoot = [docs stringByAppendingPathComponent:@"dl"];
+    if (![fm createDirectoryAtPath:nativeRoot withIntermediateDirectories:YES attributes:nil error:nil]) return;
+    NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz0123456789_"] invertedSet];
+    for (NSDictionary *entry in manifest[@"songs"]) {
+        if (![entry isKindOfClass:NSDictionary.class]) continue;
+        NSString *songID = entry[@"id"];
+        NSDictionary *files = entry[@"files"];
+        if (![songID isKindOfClass:NSString.class] || !songID.length || songID.length >= 64 ||
+            [songID rangeOfCharacterFromSet:invalid].location != NSNotFound ||
+            ![files isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *songInfo = nil;
+        for (NSDictionary *candidate in songs) if ([candidate[@"id"] isEqual:songID]) { songInfo = candidate; break; }
+        if (!songInfo || ![songInfo[@"remote_dl"] boolValue]) continue;
+        uint32_t mask = 0;
+        NSMutableArray<NSString *> *names = [NSMutableArray arrayWithObject:@"base.ogg"];
+        for (NSDictionary *difficulty in songInfo[@"difficulties"]) {
+            int index = [difficulty[@"ratingClass"] intValue];
+            if (index >= 0 && index < 5) {
+                mask |= 1u << index;
+                [names addObject:[NSString stringWithFormat:@"%d.aff", index]];
+            }
+        }
+        if (!mask) continue;
+        NSString *relative = [NSString stringWithFormat:@"../cb/active/songs/dl_%@", songID];
+        NSString *sourceRoot = [active stringByAppendingPathComponent:[NSString stringWithFormat:@"songs/dl_%@", songID]];
+        BOOL valid = YES;
+        NSMutableArray<NSDictionary *> *links = [NSMutableArray array];
+        for (NSString *name in names) {
+            NSDictionary *expected = files[name];
+            NSData *data = [NSData dataWithContentsOfFile:[sourceRoot stringByAppendingPathComponent:name]
+                                                options:NSDataReadingMappedIfSafe error:nil];
+            if (![expected isKindOfClass:NSDictionary.class] || !data.length ||
+                data.length != [expected[@"bytes"] unsignedLongLongValue] ||
+                ![s_local_sha256(data) isEqual:expected[@"sha256"]]) { valid = NO; break; }
+            NSString *suffix = [name isEqual:@"base.ogg"] ? @"" : name.stringByDeletingPathExtension;
+            NSString *nativeKey = [name isEqual:@"base.ogg"] ? songID : [NSString stringWithFormat:@"%@_%@", songID, suffix];
+            NSString *native = [nativeRoot stringByAppendingPathComponent:nativeKey];
+            NSString *target = [relative stringByAppendingPathComponent:name];
+            mode_t mode = 0;
+            if (s_lstat(native.fileSystemRepresentation, &mode) == 0) {
+                if (S_ISLNK(mode)) {
+                    if (![s_symlink_target(native.fileSystemRepresentation) isEqual:target]) { valid = NO; break; }
+                } else if (!S_ISREG(mode) || ![s_local_sha256([NSData dataWithContentsOfFile:native]) isEqual:expected[@"sha256"]]) {
+                    valid = NO; break;
+                }
+            } else {
+                [links addObject:@{@"native":native, @"target":target}];
+            }
+        }
+        if (!valid) { xrc_logw(XRCLC_CB, @"[local] %@ 文件不完整、哈希不符或原生路径冲突，保留原下载判定", songID); continue; }
+        for (NSDictionary *link in links) {
+            if (symlink([link[@"target"] fileSystemRepresentation], [link[@"native"] fileSystemRepresentation]) != 0) { valid = NO; break; }
+        }
+        if (valid && xrc_brk_local_content_add(songID.UTF8String, mask))
+            xrc_logi(XRCLC_CB, @"[local] %@ verified+linked mask=0x%x root=Documents/dl status=ready-on-unlock", songID, mask);
+        else
+            xrc_logw(XRCLC_CB, @"[local] %@ 原生映射未完成，保留原下载判定", songID);
+    }
 }

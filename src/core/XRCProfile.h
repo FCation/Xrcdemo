@@ -355,8 +355,9 @@
 //   xrc-download-state-rootcause 三笔记交叉一致。
 // 目标（第一性原理）：**本地存在合法谱面（该难度在 songlist 声明，song+0x250[idx]!=0）时，
 //   任何"条件"不得阻止其可见、可游玩**。四处判定源头（覆盖 44+70+37/19+2 个调用点）：
-//   ① 锁态总源 sub_100919E5C（入口 SUB SP,#0xB0）——五字节打包 b0..b4 中 0 = 解锁；
-//      44 个调用点（选曲 cell/曲绘/横幅/世界/包页）全部读它。已声明难度清零，缺谱难度保留锁态。
+//   ① 锁态总源 sub_100919E5C（入口 SUB SP,#0xB0）——当前难度的锁态/显示标志；
+//      五字节不是五难度槽。B5CC84 读 bit24 隐藏评级，84EF48 读 bit32 切换锁绘。
+//      44 个调用点全部读它。当前难度已声明则所有标志清零，当前难度未声明保留原判定。
 //   ② 可玩性总源 sub_100919874（入口 SUB SP,#0x60）——选曲 start 钮/开局链的唯一谓词，
 //      70 个调用点且消费方按 CBNZ=可用 判（50 8EAF84、70 B60ECC L621 为典型）。直返 1。
 //      ⚠ 守卫：仅当该难度"已声明"才放行（song+0x250[BDCD20(diff)]!=0）——没有谱面的难度
@@ -380,6 +381,14 @@
 #define XRC_BRK_COND_UNLOCK_B_REPLAY_OFF (0x1468158ULL)
 #define XRC_BRK_DL_PLAY_SITE_OFF       (0x850308ULL)   // ④ sub_100850308 入口
 #define XRC_BRK_DL_PLAY_REPLAY_OFF     (0x1468148ULL)
+// 下载点击诊断（2026-10-16）：C11864 保留谓词返回值；84691C/846928 是
+// sub_1008468C8 的 CBZ/TBZ 许可门。第二道门可对已核对的点击定向放行。
+#define XRC_BRK_DL_CLICK_RESULT_SITE_OFF   (0xC11864ULL)   // LDRB W8,[X23,#0x1C0]
+#define XRC_BRK_DL_CLICK_RESULT_REPLAY_OFF (0x1468160ULL)
+#define XRC_BRK_DL_GATE_A_SITE_OFF         (0x84691CULL)   // CBZ W0,0x8469A0
+#define XRC_BRK_DL_GATE_B_SITE_OFF         (0x846928ULL)   // TBZ W0,#0,0x8469A0
+#define XRC_BRK_LOCAL_DL_STATE_SITE_OFF    (0x844774ULL)
+#define XRC_BRK_LOCAL_DL_STATE_REPLAY_OFF  (0x1468168ULL)
 // arghena 专属锁绘旁路：sub_10084EE7C 内 0x84EF48 的 `TBNZ X0,#0x20`（X0 = sub_100919E5C
 //   返回值，bit32 = b4/INS）。置位 → 落 0x84F05C → 调 sub_10084F0E8 →（包==konzetsu）
 //   `img/jacket_locked_konzetsu.jpg`。旧版错误地以 b4=1 表示解锁，导致曲绘变锁绘；
