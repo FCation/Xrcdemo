@@ -120,7 +120,7 @@ BRK_HOOKS = [
     ("ap_tickcnt2",      0x10091DDBC, 0x1014680F8, "fa0300aa"),  # MOV X26,X0（helper2=sub_10091E958 返回后，Lost tick 数）
     # ---- 曲目锁态覆盖（取证 research/notes/xrc-packlock-rootcause-2026-09-19.md）----
     # 锁状态函数 sub_100919E5C 的两个专属子分支（各自唯一调用方=锁态函数自身）：
-    #   FV 五曲 fast path / DO(konzetsu) 分支。入口直返 0x0101010101（五难度类全解锁）；
+    #   FV 五曲 fast path / DO(konzetsu) 分支。入口直返 x0=0、x1=0（锁态 0 = 解锁）；
     #   开关 unlockFv / unlockDo 关时重放原指令走原路径。两处入口指令均 SP 相对、重放安全。
     ("lock_fv",          0x100991508, 0x101468100, "f44fbea9"),  # STP X20,X19,[SP,#-0x20]!（FV 五曲 fast path 入口）
     ("lock_do",          0x100AAE50C, 0x101468108, "ff4303d1"),  # SUB SP,#0xD0（DO/konzetsu 分支入口）
@@ -135,20 +135,20 @@ BRK_HOOKS = [
     ("chain_prog",       0x10098FB1C, 0x101468118, "ffc302d1"),  # SUB SP,#0xB0（链进度 sub_10098FB1C 入口）
     # ---- 全条件放行（unlock_all / dl_ready；2026-10-12；站点/证据链见 XRCProfile.h 同名块）----
     # 目标：本地存在合法谱面（难度已声明 song+0x250[idx]）时，任何"条件"不得阻止可见/可玩。
-    #   ① lock_all   = 锁态总源 sub_100919E5C（44 调用点：cell/曲绘/横幅/世界/包页）→ 0x0101010101
+    #   ① lock_all   = 锁态总源 sub_100919E5C（44 调用点：cell/曲绘/横幅/世界/包页）→ 已声明难度锁态清零
     #   ② play_gate  = 可玩性总源 sub_100919874（70 调用点：start 钮/开局链）→ 1（守卫：难度须已声明）
     #   ③ cond_unlock_a/b = 难度条件求值 sub_100BDC5A8/sub_100BDC8D4（解锁条件对象家族）→ 1
     #   ④ dl_play    = 下载"需动作"谓词 sub_100850308（2 调用点：start 钮图标/开局弹窗分流）→ 0
     #      ⚠ 不动 sub_100844774（下载机制本体，2026-09-28 教训）；缺文件仍由开局链温和失败+重扫。
     #   ⑤ jacket_lock = sub_10084EE7C 内 0x84EF48 `TBNZ X0,#0x20`（arghena 专属锁绘分支；
-    #      与 unlockDo/unlockAll 的 b4=1 联动）。**no-replay**（PC 相对条件分支，handler 按位复现）。
+    #      旧版的 b4=1 错误锁态会触发锁绘）。**no-replay**（PC 相对条件分支，handler 按位复现）。
     #   配对标记 "unlock-policy v1"（dylib 侧须存在，缺则拒配——见 main() 的配对校验）。
     ("lock_all",         0x100919E5C, 0x101468138, "ffc302d1"),  # SUB SP,#0xB0（锁态总源入口）
     ("play_gate",        0x100919874, 0x101468140, "ff8301d1"),  # SUB SP,#0x60（可玩性总源入口）
     ("dl_play",          0x100850308, 0x101468148, "f657bda9"),  # STP X22,X21,[SP,#-0x30]!（需动作谓词入口）
     ("cond_unlock_a",    0x100BDC5A8, 0x101468150, "ff4302d1"),  # SUB SP,#0x90（难度条件求值 A）
     ("cond_unlock_b",    0x100BDC8D4, 0x101468158, "ff8301d1"),  # SUB SP,#0x60（难度条件求值 B）
-    # 锁绘分支族（四处，no-replay：PC 相对条件分支，handler 按位复现；开关 = unlockAll || unlockDo）。
+    # 锁绘分支族（五处，no-replay：PC 相对条件分支，handler 按位复现；开关 = unlockAll || unlockDo）。
     # 触发器 = 锁态 bit32（b4）；置位 → sub_10084F0E8 锁绘选择器（konzetsu/finale/grievouslady/
     # tempestissimo/undyingmacula → jacket_locked_*，其余 → img/1080/jacket_locked_generic.jpg）。
     # 开关开时恒走普通曲绘侧。站点/目标均取自原生二进制反汇编（XRCProfile.h 同名块有全链证据）。

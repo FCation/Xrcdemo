@@ -44,7 +44,6 @@ xrcdemo_LOGOSFLAGS = -c generator=MobileSubstrate
 xrcdemo_LDFLAGS = -Xlinker -not_for_dyld_shared_cache
 
 ADDITIONAL_CFLAGS += -Wno-error=unused-variable -Wno-error=unused-function
-ADDITIONAL_CFLAGS += -Wno-error=unused-but-set-variable
 ADDITIONAL_CFLAGS += -Wno-error=deprecated-declarations
 
 include $(THEOS)/makefiles/common.mk

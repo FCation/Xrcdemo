@@ -322,7 +322,8 @@
 #define XRC_BRK_AP_TICKCNT2_REPLAY_OFF  (0x14680F8ULL)
 // 曲目锁态覆盖站点（取证 research/notes/xrc-packlock-rootcause-2026-09-19.md）：
 // 锁状态函数 sub_100919E5C 内的两个专属子分支，各自只有唯一调用方（锁态函数自身），
-// 入口直返 0x0101010101（b0..b4 = PST/PRS/FTR/BYD/INS 全解锁）即可对齐显示；开关 = unlockFv / unlockDo。
+// 五字节锁态中 0 = 解锁，1 = 锁定；入口直返 x0=0、x1=0 才是全解锁。
+// 原生 FV 门控放行分支 @0x99152C 也返回这对值；开关 = unlockFv / unlockDo。
 //   · 0x991508 = FV 五曲 fast path（入口 STP X20,X19,[SP,#-0x20]!；重放安全）
 //   · 0xAAE50C = DO(konzetsu) 分支（入口 SUB SP,#0xD0；重放安全）
 #define XRC_BRK_LOCK_FV_SITE_OFF        (0x991508ULL)
@@ -354,8 +355,8 @@
 //   xrc-download-state-rootcause 三笔记交叉一致。
 // 目标（第一性原理）：**本地存在合法谱面（该难度在 songlist 声明，song+0x250[idx]!=0）时，
 //   任何"条件"不得阻止其可见、可游玩**。四处判定源头（覆盖 44+70+37/19+2 个调用点）：
-//   ① 锁态总源 sub_100919E5C（入口 SUB SP,#0xB0）——五字节打包 b0..b4=1 才显示"全解锁"；
-//      44 个调用点（选曲 cell/曲绘/横幅/世界/包页）全部读它。直返 0x0101010101。
+//   ① 锁态总源 sub_100919E5C（入口 SUB SP,#0xB0）——五字节打包 b0..b4 中 0 = 解锁；
+//      44 个调用点（选曲 cell/曲绘/横幅/世界/包页）全部读它。已声明难度清零，缺谱难度保留锁态。
 //   ② 可玩性总源 sub_100919874（入口 SUB SP,#0x60）——选曲 start 钮/开局链的唯一谓词，
 //      70 个调用点且消费方按 CBNZ=可用 判（50 8EAF84、70 B60ECC L621 为典型）。直返 1。
 //      ⚠ 守卫：仅当该难度"已声明"才放行（song+0x250[BDCD20(diff)]!=0）——没有谱面的难度
@@ -381,8 +382,8 @@
 #define XRC_BRK_DL_PLAY_REPLAY_OFF     (0x1468148ULL)
 // arghena 专属锁绘旁路：sub_10084EE7C 内 0x84EF48 的 `TBNZ X0,#0x20`（X0 = sub_100919E5C
 //   返回值，bit32 = b4/INS）。置位 → 落 0x84F05C → 调 sub_10084F0E8 →（包==konzetsu）
-//   `img/jacket_locked_konzetsu.jpg`。⚠ 该位与"五难度全解"共用（unlockDo/unlockAll 置 b4=1
-//   ⇒ arghena 曲绘变"锁绘"）→ 本桩 ON 时恒"不跳"（普通曲绘）、OFF 时按位复现原分支。
+//   `img/jacket_locked_konzetsu.jpg`。旧版错误地以 b4=1 表示解锁，导致曲绘变锁绘；
+//   当前锁态返回值已修正，本桩 ON 时仍恒"不跳"（普通曲绘）、OFF 时按位复现原分支。
 // 锁绘分支族（五处，均为 PC 相对条件分支 → no-replay，handler 按位复现；开关 = unlock_all ||
 //   unlock_do）。全链证据：sub_10084F0E8 = 锁绘选择器（包 konzetsu/finale → jacket_locked_*；
 //   id grievouslady/tempestissimo → "img/jacket_locked_"+id；undyingmacula 专属；其余 →

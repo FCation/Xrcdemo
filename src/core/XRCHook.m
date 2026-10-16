@@ -312,27 +312,30 @@ static void s_cb_fetch_observe(void *vctx) {
 // 锁状态函数 `sub_100919E5C` 内的两个专属子分支（各自唯一调用方 = 锁态函数自身）：
 //   · 0x100991508 = FV 五曲 fast path（硬编码集合经 song+0x257 开关；id 改名后该路不再命中）；
 //   · 0x100AAE50C = DO(konzetsu) 分支（读存档 insightPrechallengeRevealIndex；未推进时只放行 FTR/INS）。
-// 二者都返回"五字节打包"的按难度解锁位（b0..b4 = PST/PRS/FTR/BYD/INS，**1 = 可玩**）→
-// 直返 `0x0101010101` = 五难度全解。
-// ⚠ DO 专属曲绘与 b4 的冲突（实测）：`sub_10084EE7C` 里"包==konzetsu 且锁态 b4 置位
-//   → 用 img/jacket_locked_konzetsu.jpg"。五字节全置 1 会让 DO 曲显示那张专属曲绘（**是曲绘、
-//   不是挂锁**，可玩性不受影响）；反之让 b4=0 保普通曲绘，则 cell 的"全 1 才算解锁"判据失败 →
-//   挂锁回来。二者共用 b4，**不可兼得**，现取"无挂锁 + 专属曲绘"。
+// 二者都返回五字节打包的难度锁态（b0..b4 = PST/PRS/FTR/BYD/INS，0 = 解锁，1 = 锁定）。
+// 原生 FV 分支在门控放行时明确返回 x0=0、x1=0；DO/普通曲绘也在 b4=1 时显示锁绘。
+// 旧桩误返 0x0101010101，把所有难度标为锁定。
+static void s_lock_clear(void *vctx, uint64_t locked_bits) {
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    uc->uc_mcontext->__ss.__x[1] = 0; // 锁态函数的第二返回值：0 = 无额外锁定原因
+    s_ret(locked_bits, vctx);
+}
 static void s_lock_fv(void *vctx) {
     if (!atomic_load(&s_unlock_fv)) return;
-    s_ret(0x0000000101010101ULL, vctx);
+    s_lock_clear(vctx, 0);
 }
 static void s_lock_do(void *vctx) {
     if (!atomic_load(&s_unlock_do)) return;
-    s_ret(0x0000000101010101ULL, vctx);
+    s_lock_clear(vctx, 0);
 }
 
 // 终章链门覆盖（开关 gateOpen）：
 // `sub_10099156C` 的返回语义经两处消费点钉死——
 //   ① `sub_100919874`（可玩性谓词）直返它的值，消费点 sub_1008660F8 的 `CBNZ W0`（选中该难度）
 //      把非零当"可用"；
-//   ② `sub_100991508` 里 `if (56C & 1) → 返回全 0 字节（全锁）`，方向一致。
-//   ⇒ **1 = 放行、0 = 锁**（返 0 会把全曲钉死）；入口直返 **1**。
+//   ② `sub_100991508` 里 `if (56C & 1) → 返回全 0 字节（全解锁）`。
+//   ⇒ 门控函数的 1 = 放行（其返回值方向与锁态字节相反）；入口直返 1。
 static void s_finale_gate_open(void *vctx) {
     if (!atomic_load(&s_gate_open)) return;
     s_ret(1, vctx);
@@ -549,13 +552,13 @@ static void s_ap_arc_visual(void *vctx) {
 // ---------------- 全条件放行（unlock_all / dl_ready；站点/出处见 XRCProfile.h 同名块）----------------
 // 目标（第一性原理）：**本地存在合法谱面（该难度在 songlist 声明，song+0x250[idx]!=0）时，
 // 任何"条件"不得阻止其可见、可游玩**。四处判定源头：
-//   ① sub_100919E5C 锁态总源（44 调用点：选曲 cell/曲绘/横幅/世界/包页）→ 直返五字节全解；
+//   ① sub_100919E5C 锁态总源（44 调用点：选曲 cell/曲绘/横幅/世界/包页）→ 已声明难度的锁态字节清零；
 //   ② sub_100919874 可玩性总源（70 调用点：start 钮/开局链）→ 直返 1（放行）。
 //      ⚠ 仅当该难度"已声明"才放行：没有谱面的难度不硬开（开局会 load 失败 __cxa_throw）。
 //   ③ sub_100BDC5A8 / sub_100BDC8D4 难度条件求值（解锁条件对象家族）→ 恒真（1）。
 //   ④ sub_100850308 下载"需动作"谓词（仅 2 调用点：start 钮图标/开局弹窗分流）→ 直返 0。
 //      ⚠ 不动 sub_100844774（下载机制本体，2026-09-28 教训）；缺文件仍由开局链温和失败+重扫。
-static void s_lock_all(void *vctx) {           // lock_fv/lock_do 同款直返；总源级覆盖
+static void s_lock_all(void *vctx) {           // 已声明难度解锁；未声明难度保留锁定
     if (!atomic_load(&s_unlock_all)) return;
     ucontext_t *uc = (ucontext_t *)vctx;
     if (!uc || !uc->uc_mcontext) return;
@@ -565,10 +568,11 @@ static void s_lock_all(void *vctx) {           // lock_fv/lock_do 同款直返�
     if (!s_ap_ptr_ok(song)) return;
     uint32_t idx = diff >= 5 ? 1 : diff;       // sub_100BDCD20
     if (s_ap_ld8(song + 0x250 + idx) == 0) return; // 未声明的难度保留原判定
-    // x0 的五个 1 表示各难度可用；原版无谱面也返回这组位，但以 x1=1 标明缺谱。
-    // 直返时必须同时设置第二返回寄存器，否则它仍是入口的难度索引。
-    ss->__x[1] = 0;
-    s_ret(0x0000000101010101ULL, vctx);
+    uint64_t locked = 0;
+    for (uint32_t i = 0; i < 5; i++) {
+        if (s_ap_ld8(song + 0x250 + i) == 0) locked |= 1ULL << (8 * i);
+    }
+    s_lock_clear(vctx, locked);
 }
 
 static void s_play_gate(void *vctx) {          // 可玩性总源：声明过难度 → 恒放行
@@ -597,8 +601,8 @@ static void s_dl_play_ready(void *vctx) {      // "需要下载/更新"谓词 �
 // 锁绘分支族（五处，站点/出处见 XRCProfile.h 同名块）：
 //   触发器 = 锁态打包值 bit32（b4/INS）置位 → 走 sub_10084F0E8 锁绘选择器
 //   （包 konzetsu/finale → jacket_locked_*；arghena→konzetsu 绘；其余 → jacket_locked_generic）。
-//   ⚠ 该位与"五难度全解"共用（unlockDo/unlockAll 置 b4=1 ⇒ 原本该显示锁绘的曲目锁绘状态被
-//   固化成"所有曲都触发"）→ 开关开时恒走普通曲绘侧：TBNZ 站点→不跳；TBZ 站点→跳。
+//   旧版将全解锁误写为五个 1，导致所有曲目命中锁绘；当前锁态值已修正，
+//   开关开启时仍选择普通曲绘：TBNZ 站点→不跳；TBZ 站点→跳。
 //   开关关 → 按位复现原分支（逐字节同原行为）。均为 PC 相对条件分支：replay=0（no-replay）。
 static void s_jacket_branch(void *vctx, int reg, uint64_t target_off, bool tbz) {
     ucontext_t *uc = (ucontext_t *)vctx;
