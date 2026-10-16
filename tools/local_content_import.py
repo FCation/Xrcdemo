@@ -210,7 +210,8 @@ def stage(args):
             seen.add(sid)
             accepted.append({"id": sid, "files": assets})
         if not accepted:
-            raise ValueError("没有可导入的完整曲目；请查看输入目录、ZIP 和 songlist")
+            detail = json.dumps(skipped, ensure_ascii=False, indent=2)
+            raise ValueError("没有可导入的完整曲目；跳过原因：\n" + detail)
         manifest = {"schema": 1, "contentVersion": VERSION, "songs": accepted}
         manifest_path = temp / "Documents" / "xrc-local-content.json"
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
