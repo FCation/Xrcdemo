@@ -560,14 +560,14 @@ static void s_ap_arc_visual(void *vctx) {
 //   ④ sub_100850308 下载"需动作"谓词（仅 2 调用点：start 钮图标/开局弹窗分流）→ 直返 0。
 //      ⚠ 不动 sub_100844774（下载机制本体，2026-09-28 教训）；缺文件仍由开局链温和失败+重扫。
 typedef struct { char id[64]; uint32_t len, mask; } xrc_local_song_t;
-static xrc_local_song_t s_local_songs[256];
+static xrc_local_song_t s_local_songs[1024];
 static _Atomic(uint32_t) s_local_song_count, s_local_state_hits;
 
 // 仅由启动线程写表；release 发布后 SIGTRAP 处理器只读。
 bool xrc_brk_local_content_add(const char *id, uint32_t mask) {
     size_t len = id ? strnlen(id, 64) : 0;
     uint32_t n = atomic_load(&s_local_song_count);
-    if (!len || len >= 64 || n >= 256 || !(mask & 0x1Fu)) return false;
+    if (!len || len >= 64 || n >= 1024 || !(mask & 0x1Fu)) return false;
     memcpy(s_local_songs[n].id, id, len);
     s_local_songs[n].len = (uint32_t)len;
     s_local_songs[n].mask = mask;

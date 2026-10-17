@@ -32,9 +32,9 @@ for stream in (sys.stdout, sys.stderr):
 VERSION = "7.0.255"
 ID_RE = re.compile(r"[a-z0-9_]{1,63}\Z")
 AFF_RE = re.compile(r"[0-4]\.aff\Z")
-MAX_SONGS = 256  # XRCHook.m publishes a fixed-size startup table.
+MAX_SONGS = 1024  # Must match XRCHook.m's local-content startup table.
 CHUNK = 1024 * 1024
-AFC_CHUNK = 64 * 1024
+AFC_CHUNK = 1024 * 1024
 DEVICE_ROOT = "Documents/cb/active/songs"
 DEVICE_MANIFEST = "Documents/xrc-local-content.json"
 
@@ -254,6 +254,13 @@ class AFC:
     def __init__(self, library, bundle_id):
         self.lib = C.CDLL(str(library))
         self.P = C.c_void_p
+        self.library_path = str(library)
+        self.bundle_id = bundle_id
+        self._calls = 0
+        self._session_limit = 120
+        self._connect()
+
+    def _connect(self):
         self.dev = self.P()
         self.lock = self.P()
         self.svc = self.P()
@@ -267,9 +274,31 @@ class AFC:
         self._call("house_arrest_client_new", [self.P, self.P, C.POINTER(self.P)],
                    self.dev, self.svc, C.byref(self.house))
         self._call("house_arrest_send_command", [self.P, C.c_char_p, C.c_char_p],
-                   self.house, b"VendContainer", bundle_id.encode())
+                   self.house, b"VendContainer", self.bundle_id.encode())
         self._call("afc_client_new_from_house_arrest_client", [self.P, C.POINTER(self.P)],
                    self.house, C.byref(self.client))
+        self._calls = 0
+
+    def close(self):
+        # Release in reverse order; all functions are optional across DLL builds.
+        for name, ptr in (("afc_client_free", self.client),
+                          ("house_arrest_client_free", self.house),
+                          ("lockdownd_service_descriptor_free", self.svc),
+                          ("lockdownd_client_free", self.lock),
+                          ("idevice_free", self.dev)):
+            fn = getattr(self.lib, name, None)
+            if fn and ptr:
+                fn.argtypes, fn.restype = [self.P], None
+                fn(ptr)
+        self.dev = self.lock = self.svc = self.house = self.client = self.P()
+
+    def reconnect(self):
+        self.close()
+        self._connect()
+
+    def _session(self, reserve=1):
+        if self._calls + reserve > self._session_limit:
+            self.reconnect()
 
     def _call(self, name, types, *values):
         fn = getattr(self.lib, name)
@@ -277,12 +306,15 @@ class AFC:
         code = fn(*values)
         if code:
             raise RuntimeError(f"{name}: AFC 错误 {code}")
+        self._calls += 1
 
     def stat(self, path):
+        self._session()
         ptr = C.POINTER(C.c_char_p)()
         fn = self.lib.afc_get_file_info
         fn.argtypes, fn.restype = [self.P, C.c_char_p, C.POINTER(C.POINTER(C.c_char_p))], C.c_int
         code = fn(self.client, path.encode(), C.byref(ptr))
+        self._calls += 1
         if code == 8:  # AFC_E_OBJECT_NOT_FOUND
             return None
         if code:
@@ -298,6 +330,7 @@ class AFC:
         return result
 
     def mkdir(self, path):
+        self._session()
         current = self.stat(path)
         if current:
             if current.get("st_ifmt") != "S_IFDIR":
@@ -315,6 +348,8 @@ class AFC:
         self._call("afc_file_close", [self.P, C.c_uint64], self.client, handle)
 
     def hash(self, path):
+        # Keep the complete file handle operation in one AFC session.
+        self._session(64)
         handle = self._open(path, 1)
         sha, size = hashlib.sha256(), 0
         try:
@@ -332,6 +367,7 @@ class AFC:
         return {"bytes": size, "sha256": sha.hexdigest()}
 
     def read(self, path, limit=4 * 1024 * 1024):
+        self._session(64)
         metadata = self.stat(path)
         if metadata is None:
             return None
@@ -354,6 +390,7 @@ class AFC:
         return bytes(data)
 
     def remove(self, path):
+        self._session()
         self._call("afc_remove_path", [self.P, C.c_char_p], self.client, path.encode())
 
     def write_blocks(self, handle, stream):
@@ -366,6 +403,7 @@ class AFC:
                 raise IOError("设备分块写入不完整")
 
     def upload_atomic(self, path, source):
+        self._session(64)
         temporary = path + ".xrc-import.tmp"
         if self.stat(temporary):
             self.remove(temporary)
@@ -388,7 +426,13 @@ class AFC:
 
 
 def validate_stage(root):
-    manifest = json.loads((root / "Documents" / "xrc-local-content.json").read_text(encoding="utf-8"))
+    manifest_path = root / "Documents" / "xrc-local-content.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            f"找不到暂存清单：{manifest_path}\n"
+            "--stage 必须指向 prepare 命令生成的输出目录，而不是原始 songs 输入目录。"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schema") != 1 or manifest.get("contentVersion") != VERSION:
         raise ValueError("清单格式或内容版本不匹配")
     entries = manifest.get("songs")
@@ -431,7 +475,9 @@ def install(args):
     if existing.get("schema") != 1 or existing.get("contentVersion") != VERSION or not isinstance(existing.get("songs"), list):
         raise ValueError("设备现有清单格式或版本不匹配")
     transfers = []
-    for row in manifest["songs"]:
+    for index, row in enumerate(manifest["songs"]):
+        if index and index % 4 == 0:
+            device.reconnect()
         sid, files = row["id"], row["files"]
         required = required_files(songs.get(sid))
         if required is None or set(required) != set(files):
@@ -468,7 +514,9 @@ def install(args):
     previous_device = DEVICE_MANIFEST + ".xrc-import.previous"
     if device.stat(previous_device):
         raise FileExistsError(f"设备已有清单备份，请先检查：{previous_device}")
-    for target, source in transfers:
+    for index, (target, source) in enumerate(transfers):
+        if index and index % 2 == 0:
+            device.reconnect()
         folder = target.rsplit("/", 1)[0]
         device.mkdir(folder)
         device.upload_atomic(target, source)
