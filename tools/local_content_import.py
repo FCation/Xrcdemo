@@ -459,9 +459,59 @@ def validate_stage(root):
     return manifest
 
 
+def publish_manifest(device, root, previous_raw, entries):
+    payload = (json.dumps({"schema": 1, "contentVersion": VERSION, "songs": list(entries.values())},
+                          ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    if payload == previous_raw:
+        return previous_raw
+    if previous_raw:
+        backup = root / ("device-manifest-before-" + hashlib.sha256(previous_raw).hexdigest()[:12] + ".json")
+        if backup.exists() and backup.read_bytes() != previous_raw:
+            raise FileExistsError(f"现有备份内容不同，拒绝覆盖：{backup}")
+        backup.write_bytes(previous_raw)
+    previous_device = DEVICE_MANIFEST + ".xrc-import.previous"
+    if device.stat(previous_device):
+        raise FileExistsError(f"设备已有清单备份，请先检查：{previous_device}")
+    temporary_device = DEVICE_MANIFEST + ".xrc-import.tmp"
+    if device.stat(temporary_device):
+        device.remove(temporary_device)
+    local_copy = root / "device-manifest-merged.json"
+    local_copy.write_bytes(payload)
+    handle = device._open(temporary_device, 3)
+    try:
+        with local_copy.open("rb") as stream:
+            device.write_blocks(handle, stream)
+    finally:
+        device._close(handle)
+    expected = {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+    if device.hash(temporary_device) != expected:
+        raise IOError("设备清单读回校验失败")
+    if previous_raw:
+        device._call("afc_rename_path", [device.P, C.c_char_p, C.c_char_p],
+                     device.client, DEVICE_MANIFEST.encode(), previous_device.encode())
+    try:
+        device._call("afc_rename_path", [device.P, C.c_char_p, C.c_char_p],
+                     device.client, temporary_device.encode(), DEVICE_MANIFEST.encode())
+    except Exception:
+        if previous_raw:
+            device._call("afc_rename_path", [device.P, C.c_char_p, C.c_char_p],
+                         device.client, previous_device.encode(), DEVICE_MANIFEST.encode())
+        raise
+    if device.hash(DEVICE_MANIFEST) != expected:
+        raise IOError("最终清单读回校验失败；设备上保留了旧清单备份")
+    if previous_raw:
+        device.remove(previous_device)
+    return payload
+
+
 def install(args):
     root = Path(args.stage).resolve()
     manifest = validate_stage(root)
+    requested = set(args.only)
+    selected = [row for row in manifest["songs"] if not requested or row["id"] in requested]
+    missing = requested - {row["id"] for row in selected}
+    if missing:
+        raise ValueError(f"暂存包中没有这些曲目：{', '.join(sorted(missing))}")
     library = Path(args.afc_dll).resolve() if args.afc_dll else os.environ.get("XRC_AFC_LIBRARY")
     if not library:
         raise ValueError("请用 --afc-dll 指定 libimobiledevice 的动态库，或设置 XRC_AFC_LIBRARY")
@@ -475,7 +525,8 @@ def install(args):
     if existing.get("schema") != 1 or existing.get("contentVersion") != VERSION or not isinstance(existing.get("songs"), list):
         raise ValueError("设备现有清单格式或版本不匹配")
     transfers = []
-    for index, row in enumerate(manifest["songs"]):
+    by_song = {}
+    for index, row in enumerate(selected):
         if index and index % 4 == 0:
             device.reconnect()
         sid, files = row["id"], row["files"]
@@ -486,71 +537,50 @@ def install(args):
         item = device.stat(folder)
         if item and item.get("st_ifmt") != "S_IFDIR":
             raise ValueError(f"设备目录路径冲突：{folder}")
+        pending = []
         for name, expected in files.items():
             target = f"{folder}/{name}"
             current = device.stat(target)
             if current and (int(current["st_size"]) != expected["bytes"] or device.hash(target) != expected):
                 raise ValueError(f"设备已有不同内容，拒绝覆盖：{target}")
             if not current:
-                transfers.append((target, root / "Documents" / "cb" / "active" / "songs" / f"dl_{sid}" / name))
+                transfer = (target, root / "Documents" / "cb" / "active" / "songs" / f"dl_{sid}" / name)
+                transfers.append(transfer)
+                pending.append(transfer)
+        by_song[sid] = pending
     merged = {row.get("id"): row for row in existing["songs"] if isinstance(row, dict) and isinstance(row.get("id"), str)}
-    merged.update({row["id"]: row for row in manifest["songs"]})
+    merged.update({row["id"]: row for row in selected})
     if len(merged) > MAX_SONGS:
         raise ValueError(f"合并后超过 {MAX_SONGS} 曲目上限")
-    new_manifest = {"schema": 1, "contentVersion": VERSION, "songs": list(merged.values())}
-    payload = (json.dumps(new_manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     plan = {"mode": "apply" if args.apply else "preview", "bundle_id": args.bundle_id,
-            "songs": [row["id"] for row in manifest["songs"]],
+            "songs": [row["id"] for row in selected],
             "files_to_copy": len(transfers), "bytes_to_copy": sum(p.stat().st_size for _, p in transfers),
             "existing_manifest_entries": len(existing["songs"]), "merged_entries": len(merged)}
     print(json.dumps(plan, ensure_ascii=False, indent=2), flush=True)
     if not args.apply:
+        device.close()
         return
-    backup = root / ("device-manifest-before-" + hashlib.sha256(existing_raw).hexdigest()[:12] + ".json") if existing_raw else None
-    if backup and backup.exists() and backup.read_bytes() != existing_raw:
-        raise FileExistsError(f"现有备份内容不同，拒绝覆盖：{backup}")
-    if existing_raw:
-        backup.write_bytes(existing_raw)
-    previous_device = DEVICE_MANIFEST + ".xrc-import.previous"
-    if device.stat(previous_device):
-        raise FileExistsError(f"设备已有清单备份，请先检查：{previous_device}")
-    for index, (target, source) in enumerate(transfers):
-        if index and index % 2 == 0:
-            device.reconnect()
-        folder = target.rsplit("/", 1)[0]
-        device.mkdir(folder)
-        device.upload_atomic(target, source)
-        print(f"已传输并读回核对：{target}", flush=True)
-    temporary_local = root / "device-manifest-merged.json"
-    temporary_local.write_bytes(payload)
-    # Manifest is published last, after every resource has passed read-back.
-    temporary_device = DEVICE_MANIFEST + ".xrc-import.tmp"
-    if device.stat(temporary_device):
-        device.remove(temporary_device)
-    handle = device._open(temporary_device, 3)
-    try:
-        with temporary_local.open("rb") as stream:
-            device.write_blocks(handle, stream)
-    finally:
-        device._close(handle)
-    if device.hash(temporary_device) != {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}:
-        raise IOError("设备清单读回校验失败")
-    # AFC rename replacement behavior varies; back up the old manifest on device.
-    if existing_raw:
-        device._call("afc_rename_path", [device.P, C.c_char_p, C.c_char_p],
-                     device.client, DEVICE_MANIFEST.encode(), previous_device.encode())
-    try:
-        device._call("afc_rename_path", [device.P, C.c_char_p, C.c_char_p],
-                     device.client, temporary_device.encode(), DEVICE_MANIFEST.encode())
-    except Exception:
-        if existing_raw:
-            device._call("afc_rename_path", [device.P, C.c_char_p, C.c_char_p],
-                         device.client, previous_device.encode(), DEVICE_MANIFEST.encode())
-        raise
-    if device.hash(DEVICE_MANIFEST) != {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}:
-        raise IOError("最终清单读回校验失败；设备上保留了旧清单备份")
-    if existing_raw:
-        device.remove(previous_device)
+    if not 1 <= args.batch_size <= 100:
+        raise ValueError("--batch-size 必须在 1 到 100 之间")
+    committed = {row["id"]: row for row in existing["songs"]
+                 if isinstance(row, dict) and isinstance(row.get("id"), str)}
+    file_index = 0
+    for start in range(0, len(selected), args.batch_size):
+        batch = selected[start:start + args.batch_size]
+        for row in batch:
+            for target, source in by_song[row["id"]]:
+                if file_index % 2 == 0:
+                    device.reconnect()
+                file_index += 1
+                device.mkdir(target.rsplit("/", 1)[0])
+                device.upload_atomic(target, source)
+                print(f"已传输并读回核对：{target}", flush=True)
+            committed[row["id"]] = row
+        device.reconnect()
+        existing_raw = publish_manifest(device, root, existing_raw, committed)
+        print(f"已发布 {min(start + len(batch), len(selected))}/{len(selected)} 首，"
+              f"清单共 {len(committed)} 首", flush=True)
+    device.close()
     print(f"清单已写入并核对：{DEVICE_MANIFEST}；请重开应用", flush=True)
 
 
@@ -567,6 +597,8 @@ def main():
     sync.add_argument("--bundle-id", required=True, help="设备上实际签名后的 Bundle ID")
     sync.add_argument("--afc-dll", help="libimobiledevice 动态库路径，也可设置 XRC_AFC_LIBRARY")
     sync.add_argument("--apply", action="store_true", help="实际传输；默认只预览")
+    sync.add_argument("--batch-size", type=int, default=8, help="每批完成后发布清单的曲目数；默认 8")
+    sync.add_argument("--only", action="append", default=[], help="只导入指定曲目 ID；可重复，默认整批")
     sync.set_defaults(run=install)
     args = parser.parse_args()
     try:
