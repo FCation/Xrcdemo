@@ -405,7 +405,13 @@ class AFC:
     def upload_atomic(self, path, source):
         self._session(64)
         temporary = path + ".xrc-import.tmp"
+        with open(source, "rb") as stream:
+            expected, _ = digest_stream(stream)
         if self.stat(temporary):
+            if self.hash(temporary) == expected and not self.stat(path):
+                self._call("afc_rename_path", [self.P, C.c_char_p, C.c_char_p],
+                           self.client, temporary.encode(), path.encode())
+                return
             self.remove(temporary)
         handle = self._open(temporary, 3)
         try:
@@ -413,8 +419,6 @@ class AFC:
                 self.write_blocks(handle, stream)
         finally:
             self._close(handle)
-        with open(source, "rb") as stream:
-            expected, _ = digest_stream(stream)
         if self.hash(temporary) != expected:
             self.remove(temporary)
             raise IOError(f"设备读回校验失败：{temporary}")
@@ -524,6 +528,10 @@ def install(args):
     existing = json.loads(existing_raw) if existing_raw else {"schema": 1, "contentVersion": VERSION, "songs": []}
     if existing.get("schema") != 1 or existing.get("contentVersion") != VERSION or not isinstance(existing.get("songs"), list):
         raise ValueError("设备现有清单格式或版本不匹配")
+    if args.pending_only:
+        published = {row["id"]: row for row in existing["songs"]
+                     if isinstance(row, dict) and isinstance(row.get("id"), str)}
+        selected = [row for row in selected if published.get(row["id"]) != row]
     transfers = []
     by_song = {}
     for index, row in enumerate(selected):
@@ -572,8 +580,16 @@ def install(args):
                 if file_index % 2 == 0:
                     device.reconnect()
                 file_index += 1
-                device.mkdir(target.rsplit("/", 1)[0])
-                device.upload_atomic(target, source)
+                for attempt in range(3):
+                    try:
+                        device.mkdir(target.rsplit("/", 1)[0])
+                        device.upload_atomic(target, source)
+                        break
+                    except RuntimeError as exc:
+                        if "AFC 错误" not in str(exc) or attempt == 2:
+                            raise
+                        print(f"AFC 通信中断，重连后重试 {attempt + 1}/2：{target}", flush=True)
+                        device.reconnect()
                 print(f"已传输并读回核对：{target}", flush=True)
             committed[row["id"]] = row
         device.reconnect()
@@ -599,6 +615,7 @@ def main():
     sync.add_argument("--apply", action="store_true", help="实际传输；默认只预览")
     sync.add_argument("--batch-size", type=int, default=8, help="每批完成后发布清单的曲目数；默认 8")
     sync.add_argument("--only", action="append", default=[], help="只导入指定曲目 ID；可重复，默认整批")
+    sync.add_argument("--pending-only", action="store_true", help="续传时跳过清单中已发布且内容相同的曲目")
     sync.set_defaults(run=install)
     args = parser.parse_args()
     try:
