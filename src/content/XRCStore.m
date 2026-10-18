@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
+#include <sys/clonefile.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -40,6 +41,77 @@ static NSString *s_symlink_target(const char *p) {
     if (n <= 0) return nil;
     buf[n] = '\0';
     return [NSString stringWithUTF8String:buf];
+}
+
+// 首次安装时先把包内基础 cb 放到 Documents，完成后才原子发布 cb 根。
+// 已完成的单文件在临时目录中保留；首次启动中断时可以继续。
+int xrc_store_seed_bundled_cb(void) {
+    NSString *bundleCb = [[[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"XRCContent"]
+                          stringByAppendingPathComponent:@"cb"];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![fm fileExistsAtPath:[bundleCb stringByAppendingPathComponent:@"meta.cb"]] ||
+        ![fm fileExistsAtPath:[bundleCb stringByAppendingPathComponent:@"active/songs/songlist"]]) return 1;
+    NSString *dest = s_cb_in_docs();
+    mode_t mode = 0;
+    if (s_lstat(dest.fileSystemRepresentation, &mode) == 0 ||
+        s_lstat(s_cb_in_support().fileSystemRepresentation, &mode) == 0) return 1;
+
+    NSString *staging = [dest stringByAppendingString:@".xrc-seed"];
+    BOOL isDirectory = NO;
+    if ([fm fileExistsAtPath:staging isDirectory:&isDirectory] && !isDirectory) return -1;
+    NSError *err = nil;
+    if (![fm createDirectoryAtPath:staging withIntermediateDirectories:YES attributes:nil error:&err]) {
+        xrc_loge(XRCLC_CB, @"[seed] 创建临时目录失败: %@", err);
+        return -1;
+    }
+    NSUInteger copied = 0, reused = 0;
+    for (NSString *relative in [fm enumeratorAtPath:bundleCb]) {
+        NSString *src = [bundleCb stringByAppendingPathComponent:relative];
+        NSString *dst = [staging stringByAppendingPathComponent:relative];
+        BOOL srcDir = NO;
+        if (![fm fileExistsAtPath:src isDirectory:&srcDir]) return -1;
+        if (srcDir) {
+            if (![fm createDirectoryAtPath:dst withIntermediateDirectories:YES attributes:nil error:&err]) {
+                xrc_loge(XRCLC_CB, @"[seed] 建目录失败 %@: %@", relative, err);
+                return -1;
+            }
+            continue;
+        }
+        NSDictionary *sourceInfo = [fm attributesOfItemAtPath:src error:&err];
+        NSDictionary *destInfo = [fm attributesOfItemAtPath:dst error:nil];
+        if (!sourceInfo || ![sourceInfo[NSFileType] isEqual:NSFileTypeRegular]) return -1;
+        if (destInfo && [destInfo[NSFileType] isEqual:NSFileTypeRegular] &&
+            [destInfo[NSFileSize] unsignedLongLongValue] == [sourceInfo[NSFileSize] unsignedLongLongValue]) {
+            chmod(dst.fileSystemRepresentation, 0644);
+            reused++;
+            continue;
+        }
+        NSString *partial = [dst stringByAppendingString:@".part"];
+        [fm removeItemAtPath:partial error:nil];
+        if (clonefile(src.fileSystemRepresentation, partial.fileSystemRepresentation, 0) != 0) {
+            [fm removeItemAtPath:partial error:nil];
+            if (![fm copyItemAtPath:src toPath:partial error:&err]) {
+                xrc_loge(XRCLC_CB, @"[seed] 复制 %@ 失败: %@", relative, err);
+                return -1;
+            }
+        }
+        [fm removeItemAtPath:dst error:nil];
+        if (rename(partial.fileSystemRepresentation, dst.fileSystemRepresentation) != 0) {
+            xrc_loge(XRCLC_CB, @"[seed] 发布 %@ 失败: %s", relative, strerror(errno));
+            return -1;
+        }
+        chmod(dst.fileSystemRepresentation, 0644);
+        copied++;
+    }
+    if (![fm fileExistsAtPath:[staging stringByAppendingPathComponent:@"meta.cb"]] ||
+        ![fm fileExistsAtPath:[staging stringByAppendingPathComponent:@"active/songs/songlist"]] ||
+        rename(staging.fileSystemRepresentation, dest.fileSystemRepresentation) != 0) {
+        xrc_loge(XRCLC_CB, @"[seed] cb 快照发布失败: %s", strerror(errno));
+        return -1;
+    }
+    xrc_logi(XRCLC_CB, @"[seed] 包内基础 cb 已恢复到 Documents/cb（新复制 %lu，复用 %lu）",
+             (unsigned long)copied, (unsigned long)reused);
+    return 0;
 }
 
 // 浅层合并：把 src 里 dst 缺的条目搬过去，dst 已有的（同名）保留不动。

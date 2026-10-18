@@ -24,6 +24,9 @@
 //   · 两处都有              → 浅层合并（保留 Documents 侧同名）→ 软链
 // 返回：0 = 本次完成迁移；1 = 已是外置态（跳过）；-1 = 失败（保持原状，日志有原因）。
 int xrc_store_install(void);
+// 首次安装时从 IPA 包内恢复 7.0.255 基础 cb；已有 cb 时不覆盖。
+// 返回：0 = 已恢复；1 = 无包内快照或已有 cb；-1 = 恢复失败。
+int xrc_store_seed_bundled_cb(void);
 void xrc_store_prepare_local_content(void);
 
 // 状态查询（面板 / 诊断行）

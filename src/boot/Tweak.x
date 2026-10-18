@@ -420,6 +420,9 @@ static void xrc_apply_switches(void) {
     //（同 site 重复注册只换 handler）。
     @try { xrc_brk_setup_early(); } @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"brk early EX: %@", e); }
     xrc_apply_switches();   // 早设：cb 校验可能在本行之后数秒内就跑
+    int bundledCbSeeded = 0;
+    @try { bundledCbSeeded = (xrc_store_seed_bundled_cb() == 0); }
+    @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"bundle cb seed EX: %@", e); }
     // 存储外置（XRCStore）：把 cb 内容根搬进 Documents（容器内软链，免 root / 免越狱）。
     // 必须在游戏首次读 cb 之前 —— %ctor 是唯一稳妥的位置（doBootstrap 太晚）。
     @try {
@@ -432,8 +435,20 @@ static void xrc_apply_switches(void) {
             xrc_logi(XRCLC_BOOT, @"cb 外置：开关关闭，未做迁移 ｜ %@", xrc_store_cb_status());
         }
     } @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"store EX: %@", e); }
-    @try { xrc_store_prepare_local_content(); }
-    @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"local content EX: %@", e); }
+    NSString *bundledManifest = [[[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"XRCContent"]
+                                 stringByAppendingPathComponent:@"xrc-local-content.json"];
+    if (bundledCbSeeded || [[NSFileManager defaultManager] fileExistsAtPath:bundledManifest]) {
+        // 包内歌曲每次启动都会校验；放到后台，避免大量文件哈希阻塞前台启动。
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            @autoreleasepool {
+                @try { xrc_store_prepare_local_content(); }
+                @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"local content EX: %@", e); }
+            }
+        });
+    } else {
+        @try { xrc_store_prepare_local_content(); }
+        @catch (NSException *e) { xrc_logw(XRCLC_BOOT, @"local content EX: %@", e); }
+    }
     CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(), NULL,
         onAppLaunched,
         (CFStringRef)UIApplicationDidFinishLaunchingNotification,

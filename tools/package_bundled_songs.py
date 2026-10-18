@@ -8,10 +8,11 @@ local to the resulting IPA; this script never publishes them to a repository.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import plistlib
 import shutil
 import tempfile
@@ -32,13 +33,41 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def package(base, stage, songlist, output):
+def validate_cb(cb_root, songlist):
+    metadata = json.loads((cb_root / "meta.cb").read_text(encoding="utf-8"))
+    if metadata.get("versionNumber") != "7.0.255" or not isinstance(metadata.get("added"), list):
+        raise ValueError("基础 cb 的 meta.cb 不是 7.0.255")
+    files = []
+    seen = set()
+    for row in metadata["added"]:
+        relative = PurePosixPath(row["path"])
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts or str(relative) in seen:
+            raise ValueError(f"meta.cb 路径不合法或重复：{relative}")
+        seen.add(str(relative))
+        source = cb_root / "active" / Path(*relative.parts)
+        if source.is_symlink() or not source.is_file() or source.stat().st_size != row["length"]:
+            raise ValueError(f"基础 cb 文件缺失或长度不符：{source}")
+        expected = base64.b64decode(row["sha256HashBase64Encoded"], validate=True)
+        if bytes.fromhex(sha256(source)) != expected:
+            raise ValueError(f"基础 cb 文件哈希不符：{source}")
+        files.append((source, str(relative)))
+    actual = {p.relative_to(cb_root / "active").as_posix()
+              for p in (cb_root / "active").rglob("*") if p.is_file()}
+    if actual != seen:
+        raise ValueError("基础 cb 的 active 文件表与 meta.cb 不一致")
+    if (cb_root / "active" / "songs" / "songlist").read_bytes() != songlist.read_bytes():
+        raise ValueError("基础 cb 的 songlist 与歌曲暂存包不同")
+    return files
+
+
+def package(base, stage, songlist, output, cb_root=None):
     if output.exists():
         raise FileExistsError(f"输出已存在：{output}")
     manifest = validate_stage(stage)
     report = json.loads((stage / "import-report.json").read_text(encoding="utf-8"))
     if sha256(songlist) != report["songlist_sha256"]:
         raise ValueError("songlist 与生成暂存包时使用的版本不同")
+    cb_files = validate_cb(cb_root, songlist) if cb_root else []
     if base.resolve() == output.resolve():
         raise ValueError("输出路径不能覆盖输入 IPA")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -71,6 +100,11 @@ def package(base, stage, songlist, output):
                         archive_name = CONTENT + f"songs/dl_{row['id']}/{name}"
                         compression = zipfile.ZIP_STORED if name.endswith(".ogg") else zipfile.ZIP_DEFLATED
                         target.write(asset, archive_name, compress_type=compression)
+                if cb_root:
+                    target.write(cb_root / "meta.cb", CONTENT + "cb/meta.cb", compress_type=zipfile.ZIP_DEFLATED)
+                    for asset, relative in cb_files:
+                        compression = zipfile.ZIP_STORED if asset.suffix.lower() in (".ogg", ".jpg", ".png") else zipfile.ZIP_DEFLATED
+                        target.write(asset, CONTENT + "cb/active/" + relative, compress_type=compression)
             os.replace(temp, output)
         except Exception:
             temp.unlink(missing_ok=True)
@@ -78,6 +112,7 @@ def package(base, stage, songlist, output):
     return {"output": str(output), "bytes": output.stat().st_size,
             "sha256": sha256(output), "songs": len(manifest["songs"]),
             "assets": sum(len(row["files"]) for row in manifest["songs"]),
+            "base_cb_files": len(cb_files),
             "bundle_id": info["CFBundleIdentifier"], "display_name": info["CFBundleDisplayName"]}
 
 
@@ -87,8 +122,9 @@ def main():
     parser.add_argument("--stage", type=Path, required=True, help="local_content_import.py prepare 的输出目录")
     parser.add_argument("--songlist", type=Path, required=True, help="与暂存包相同版本的 songlist")
     parser.add_argument("--output", type=Path, required=True, help="新的未签名 IPA 路径")
+    parser.add_argument("--cb-root", type=Path, help="可选：7.0.255 基础 cb 目录；提供后支持全新安装")
     args = parser.parse_args()
-    print(json.dumps(package(args.base_ipa, args.stage, args.songlist, args.output),
+    print(json.dumps(package(args.base_ipa, args.stage, args.songlist, args.output, args.cb_root),
                      ensure_ascii=False, indent=2))
 
 
