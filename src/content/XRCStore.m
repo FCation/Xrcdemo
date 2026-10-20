@@ -307,6 +307,7 @@ void xrc_store_prepare_local_content(void) {
     if (![fm createDirectoryAtPath:nativeRoot withIntermediateDirectories:YES attributes:nil error:nil]) return;
     NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz0123456789_"] invertedSet];
     for (NSDictionary *entry in manifest[@"songs"]) {
+      @autoreleasepool {
         if (![entry isKindOfClass:NSDictionary.class]) continue;
         NSString *songID = entry[@"id"];
         NSDictionary *files = entry[@"files"];
@@ -326,6 +327,20 @@ void xrc_store_prepare_local_content(void) {
             }
         }
         if (!mask) continue;
+        // 视频曲目进入谱面时会立即打开 additional_files。只验证 AFF/音频会把缺视频的
+        // 曲目误报成已下载，AVPlayer 随后对空视频轨道取第 0 项并抛异常。
+        NSSet<NSString *> *allowedExtra = [NSSet setWithArray:@[@"video.mp4", @"video_audio.ogg",
+                                                               @"video_720.mp4", @"video_1080.mp4"]];
+        BOOL extrasDeclared = YES;
+        for (NSDictionary *extra in songInfo[@"additional_files"] ?: @[]) {
+            NSString *name = [extra isKindOfClass:NSDictionary.class] ? extra[@"file_name"] : nil;
+            if (![name isKindOfClass:NSString.class] || ![allowedExtra containsObject:name]) {
+                extrasDeclared = NO;
+                break;
+            }
+            if (![names containsObject:name]) [names addObject:name];
+        }
+        if (!extrasDeclared) continue;
         NSString *relative = [NSString stringWithFormat:@"../cb/active/songs/dl_%@", songID];
         NSString *sourceRoot = [(bundled ? bundleContent : active)
                                 stringByAppendingPathComponent:[NSString stringWithFormat:@"songs/dl_%@", songID]];
@@ -338,8 +353,11 @@ void xrc_store_prepare_local_content(void) {
             if (![expected isKindOfClass:NSDictionary.class] || !data.length ||
                 data.length != [expected[@"bytes"] unsignedLongLongValue] ||
                 ![s_local_sha256(data) isEqual:expected[@"sha256"]]) { valid = NO; break; }
-            NSString *suffix = [name isEqual:@"base.ogg"] ? @"" : name.stringByDeletingPathExtension;
-            NSString *nativeKey = [name isEqual:@"base.ogg"] ? songID : [NSString stringWithFormat:@"%@_%@", songID, suffix];
+            NSString *nativeKey = nil;
+            if ([name isEqual:@"base.ogg"]) nativeKey = songID;
+            else if ([name hasSuffix:@".aff"])
+                nativeKey = [NSString stringWithFormat:@"%@_%@", songID, name.stringByDeletingPathExtension];
+            else nativeKey = [NSString stringWithFormat:@"%@_%@", songID, name];
             NSString *native = [nativeRoot stringByAppendingPathComponent:nativeKey];
             NSString *target = bundled ? [sourceRoot stringByAppendingPathComponent:name] :
                                           [relative stringByAppendingPathComponent:name];
@@ -373,5 +391,6 @@ void xrc_store_prepare_local_content(void) {
                      songID, mask, bundled ? @"IPA" : @"Documents");
         else
             xrc_logw(XRCLC_CB, @"[local] %@ 原生映射未完成，保留原下载判定", songID);
+      }
     }
 }

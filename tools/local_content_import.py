@@ -32,6 +32,7 @@ for stream in (sys.stdout, sys.stderr):
 VERSION = "7.0.255"
 ID_RE = re.compile(r"[a-z0-9_]{1,63}\Z")
 AFF_RE = re.compile(r"[0-4]\.aff\Z")
+EXTRA_NAMES = {"video.mp4", "video_audio.ogg", "video_720.mp4", "video_1080.mp4"}
 MAX_SONGS = 1024  # Must match XRCHook.m's local-content startup table.
 CHUNK = 1024 * 1024
 AFC_CHUNK = 1024 * 1024
@@ -74,7 +75,17 @@ def required_files(row):
     indexes = {d.get("ratingClass") for d in difficulties if isinstance(d, dict)}
     if not indexes or any(type(i) is not int or i < 0 or i > 4 for i in indexes):
         return None
-    return ["base.ogg"] + [f"{i}.aff" for i in sorted(indexes)]
+    result = ["base.ogg"] + [f"{i}.aff" for i in sorted(indexes)]
+    extras = row.get("additional_files", [])
+    if not isinstance(extras, list):
+        return None
+    for extra in extras:
+        name = extra.get("file_name") if isinstance(extra, dict) else None
+        if name not in EXTRA_NAMES:
+            return None
+        if name not in result:
+            result.append(name)
+    return result
 
 
 def song_id(name):
@@ -114,7 +125,7 @@ def zip_candidates(path: Path):
             if statmod.S_ISLNK(info.external_attr >> 16):
                 continue
             name = parts[-1]
-            if name != "base.ogg" and not AFF_RE.fullmatch(name):
+            if name != "base.ogg" and not AFF_RE.fullmatch(name) and name not in EXTRA_NAMES:
                 continue
             parent = "/".join(parts[:-1])
             if name in parents.setdefault(parent, {}):
@@ -225,6 +236,10 @@ def stage(args):
                         raise ValueError(f"{name} 缺少 AFF 头")
                     if name == "base.ogg" and not header.startswith(b"OggS"):
                         raise ValueError("base.ogg 缺少 Ogg 头")
+                    if name == "video_audio.ogg" and not header.startswith(b"OggS"):
+                        raise ValueError("video_audio.ogg 缺少 Ogg 头")
+                    if name.endswith(".mp4") and header[4:8] != b"ftyp":
+                        raise ValueError(f"{name} 缺少 MP4 头")
                     assets[name] = info
             except (OSError, ValueError, zipfile.BadZipFile, EOFError) as exc:
                 shutil.rmtree(destination)
@@ -451,7 +466,7 @@ def validate_stage(root):
             raise ValueError(f"清单曲目 ID 或文件表不合法：{sid!r}")
         found.add(sid)
         for name, expected in files.items():
-            if name != "base.ogg" and not AFF_RE.fullmatch(name):
+            if name != "base.ogg" and not AFF_RE.fullmatch(name) and name not in EXTRA_NAMES:
                 raise ValueError(f"文件名不合法：{name}")
             source = root / "Documents" / "cb" / "active" / "songs" / f"dl_{sid}" / name
             if source.is_symlink() or not source.is_file():

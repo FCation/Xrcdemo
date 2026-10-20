@@ -18,7 +18,7 @@ import shutil
 import tempfile
 import zipfile
 
-from local_content_import import validate_stage
+from local_content_import import load_songlist, required_files, validate_stage
 
 
 APP = "Payload/Arc-mobile.app/"
@@ -67,6 +67,12 @@ def package(base, stage, songlist, output, cb_root=None):
     report = json.loads((stage / "import-report.json").read_text(encoding="utf-8"))
     if sha256(songlist) != report["songlist_sha256"]:
         raise ValueError("songlist 与生成暂存包时使用的版本不同")
+    song_rows = load_songlist(songlist.read_bytes())
+    for row in manifest["songs"]:
+        song = song_rows.get(row["id"])
+        required = required_files(song) if song is not None else None
+        if required is None or not set(required).issubset(row["files"]):
+            raise ValueError(f"{row['id']} 缺少当前版本声明的谱面、音频或视频文件")
     cb_files = validate_cb(cb_root, songlist) if cb_root else []
     if base.resolve() == output.resolve():
         raise ValueError("输出路径不能覆盖输入 IPA")
@@ -98,7 +104,7 @@ def package(base, stage, songlist, output, cb_root=None):
                     for name in row["files"]:
                         asset = stage / "Documents" / "cb" / "active" / "songs" / f"dl_{row['id']}" / name
                         archive_name = CONTENT + f"songs/dl_{row['id']}/{name}"
-                        compression = zipfile.ZIP_STORED if name.endswith(".ogg") else zipfile.ZIP_DEFLATED
+                        compression = zipfile.ZIP_STORED if name.endswith((".ogg", ".mp4")) else zipfile.ZIP_DEFLATED
                         target.write(asset, archive_name, compress_type=compression)
                 if cb_root:
                     target.write(cb_root / "meta.cb", CONTENT + "cb/meta.cb", compress_type=zipfile.ZIP_DEFLATED)

@@ -575,23 +575,18 @@ bool xrc_brk_local_content_add(const char *id, uint32_t mask) {
     return true;
 }
 
-static void s_local_download_state(void *vctx) {
-    if (!atomic_load(&s_unlock_all)) return;
-    ucontext_t *uc = (ucontext_t *)vctx;
-    if (!uc || !uc->uc_mcontext) return;
-    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
-    uint64_t song = ss->__x[1]; // sub_100844774(manager,song,diff,flag)
-    if (!s_ap_ptr_ok(song)) return;
-    uint32_t idx = (uint32_t)ss->__x[2];
+static bool s_local_song_ready(uint64_t song, uint32_t idx) {
+    // Song 对象起始处是 ID 的 std::string；844774 的 X1 与 850308 的 X0 指向同一对象。
+    if (!s_ap_ptr_ok(song)) return false;
     if (idx >= 5) idx = 1;
     uint8_t tag = s_ap_ld8(song + 23);
     uint64_t ptr = song, len = tag;
     if (tag & 0x80u) {
         ptr = *(volatile uint64_t *)song;
         len = *(volatile uint64_t *)(song + 8);
-        if (!s_ap_ptr_ok(ptr)) return;
+        if (!s_ap_ptr_ok(ptr)) return false;
     }
-    if (!len || len >= 64) return;
+    if (!len || len >= 64) return false;
     uint32_t n = atomic_load_explicit(&s_local_song_count, memory_order_acquire);
     for (uint32_t i = 0; i < n; i++) {
         const xrc_local_song_t *entry = &s_local_songs[i];
@@ -599,9 +594,19 @@ static void s_local_download_state(void *vctx) {
         uint32_t j = 0;
         for (; j < len; j++) if (s_ap_ld8(ptr + j) != (uint8_t)entry->id[j]) break;
         if (j != len) continue;
+        return true;
+    }
+    return false;
+}
+
+static void s_local_download_state(void *vctx) {
+    if (!atomic_load(&s_unlock_all)) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    if (s_local_song_ready(ss->__x[1], (uint32_t)ss->__x[2])) {
         atomic_fetch_add(&s_local_state_hits, 1);
         s_ret(0, vctx); // 原生资源查询：0=就绪。缺失曲目照常重放原逻辑。
-        return;
     }
 }
 
@@ -758,6 +763,11 @@ static void s_dl_play_ready(void *vctx) {      // "需要下载/更新"谓词 �
             atomic_store(&s_dl_click_diffs, diffs);
             atomic_fetch_add(&s_dl_click_seq, 1);
         }
+    }
+    if (uc && uc->uc_mcontext && atomic_load(&s_unlock_all) &&
+        s_local_song_ready(uc->uc_mcontext->__ss.__x[0], (uint32_t)uc->uc_mcontext->__ss.__x[1])) {
+        s_ret(0, vctx); // 只放行清单验证通过且该难度文件完整的曲目
+        return;
     }
     if (!atomic_load(&s_dl_ready)) return;
     s_ret(0, vctx);
