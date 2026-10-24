@@ -561,7 +561,7 @@ static void s_ap_arc_visual(void *vctx) {
 //      ⚠ 不动 sub_100844774（下载机制本体，2026-09-28 教训）；缺文件仍由开局链温和失败+重扫。
 typedef struct { char id[64]; uint32_t len, mask; } xrc_local_song_t;
 static xrc_local_song_t s_local_songs[1024];
-static _Atomic(uint32_t) s_local_song_count, s_local_state_hits;
+static _Atomic(uint32_t) s_local_song_count, s_local_state_hits, s_local_guard_hits;
 
 // 仅由启动线程写表；release 发布后 SIGTRAP 处理器只读。
 bool xrc_brk_local_content_add(const char *id, uint32_t mask) {
@@ -599,6 +599,16 @@ static bool s_local_song_ready(uint64_t song, uint32_t idx) {
     return false;
 }
 
+static bool s_song_difficulty_available(uint64_t song, uint32_t diff) {
+    if (!s_ap_ptr_ok(song)) return false;
+    uint32_t idx = diff >= 5 ? 1 : diff;
+    if (s_ap_ld8(song + 0x250 + idx) != 0) return true;
+    // 已由 songlist、AFF 和该难度完整音频共同核对的难度可补足原生状态尚未登记的情况。
+    if (!s_local_song_ready(song, idx)) return false;
+    atomic_fetch_add(&s_local_guard_hits, 1);
+    return true;
+}
+
 static void s_local_download_state(void *vctx) {
     if (!atomic_load(&s_unlock_all)) return;
     ucontext_t *uc = (ucontext_t *)vctx;
@@ -617,9 +627,7 @@ static void s_lock_all(void *vctx) {           // 已声明难度解锁；未声
     __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
     uint64_t song = ss->__x[0];
     uint32_t diff = (uint32_t)ss->__x[1];
-    if (!s_ap_ptr_ok(song)) return;
-    uint32_t idx = diff >= 5 ? 1 : diff;       // sub_100BDCD20
-    if (s_ap_ld8(song + 0x250 + idx) == 0) return; // 未声明的难度保留原判定
+    if (!s_song_difficulty_available(song, diff)) return;
     // 五字节是当前难度的锁态/显示标志。缺少另一难度不能设置 bit24（隐藏评级）。
     s_lock_clear(vctx, 0);
 }
@@ -631,9 +639,7 @@ static void s_play_gate(void *vctx) {          // 可玩性总源：声明过难
     __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
     uint64_t song = ss->__x[0];
     uint64_t diff = (uint32_t)ss->__x[1];
-    if (!s_ap_ptr_ok(song)) return;                    // 指针防御：异常形态空转回放原逻辑
-    uint64_t idx = diff >= 5 ? 1 : diff;               // = sub_100BDCD20（≥5 归 1；0x84CE2C 内同式）
-    if (s_ap_ld8(song + 0x250 + idx) == 0) return;     // 该难度未声明（无谱面）：不硬放行
+    if (!s_song_difficulty_available(song, (uint32_t)diff)) return;
     s_ret(1, vctx);
 }
 
@@ -657,11 +663,13 @@ static _Atomic(uint32_t) s_dl_gate_b_bypass_seq;
 static _Atomic(uint32_t) s_dl_gate_b_pending, s_dl_gate_b_song_match, s_dl_gate_b_diff_match;
 
 void xrc_brk_download_diag_report(void) {
-    static uint32_t local_reported;
+    static uint32_t local_reported, guard_reported;
     uint32_t local_hits = atomic_load(&s_local_state_hits);
-    if (local_hits != local_reported) {
+    uint32_t guard_hits = atomic_load(&s_local_guard_hits);
+    if (local_hits != local_reported || guard_hits != guard_reported) {
         local_reported = local_hits;
-        xrc_logi(XRCLC_DL, @"[local.state] readyHits=%u songs=%u all=%d", local_hits,
+        guard_reported = guard_hits;
+        xrc_logi(XRCLC_DL, @"[local.state] readyHits=%u declarationFallbackHits=%u songs=%u all=%d", local_hits, guard_hits,
                  atomic_load(&s_local_song_count), (int)atomic_load(&s_unlock_all));
     }
     static uint32_t reported, reported_result, reported_gate_a, reported_gate_b;

@@ -89,6 +89,8 @@ def main():
             for name in required:
                 if name in entry["files"]:
                     continue
+                if name not in {"video.mp4", "video_audio.ogg", "video_720.mp4", "video_1080.mp4"}:
+                    raise ValueError(f"{sid} 缺少真实谱面或音频 {name}，请从原始歌曲目录重新 prepare；不能生成占位")
                 if seconds is None:
                     seconds = duration_seconds(ffprobe, old_dir / "base.ogg")
                 new = new_dir / name
