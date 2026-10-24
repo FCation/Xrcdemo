@@ -319,19 +319,11 @@ void xrc_store_prepare_local_content(void) {
         if (!songInfo || ![songInfo[@"remote_dl"] boolValue]) continue;
         uint32_t mask = 0;
         NSMutableArray<NSString *> *names = [NSMutableArray arrayWithObject:@"base.ogg"];
-        NSMutableDictionary<NSString *, NSNumber *> *difficultyFiles = [NSMutableDictionary dictionary];
         for (NSDictionary *difficulty in songInfo[@"difficulties"]) {
             int index = [difficulty[@"ratingClass"] intValue];
             if (index >= 0 && index < 5) {
                 mask |= 1u << index;
-                NSString *chart = [NSString stringWithFormat:@"%d.aff", index];
-                [names addObject:chart];
-                difficultyFiles[chart] = @(1u << index);
-                if ([difficulty[@"audioOverride"] boolValue]) {
-                    NSString *audio = [NSString stringWithFormat:@"%d.ogg", index];
-                    [names addObject:audio];
-                    difficultyFiles[audio] = @(1u << index);
-                }
+                [names addObject:[NSString stringWithFormat:@"%d.aff", index]];
             }
         }
         if (!mask) continue;
@@ -355,22 +347,16 @@ void xrc_store_prepare_local_content(void) {
         BOOL valid = YES;
         NSMutableArray<NSDictionary *> *links = [NSMutableArray array];
         for (NSString *name in names) {
-          uint32_t fileMask = [difficultyFiles[name] unsignedIntValue];
-          BOOL assetValid = YES;
-          do {
             NSDictionary *expected = files[name];
             NSData *data = [NSData dataWithContentsOfFile:[sourceRoot stringByAppendingPathComponent:name]
                                                 options:NSDataReadingMappedIfSafe error:nil];
             if (![expected isKindOfClass:NSDictionary.class] || !data.length ||
                 data.length != [expected[@"bytes"] unsignedLongLongValue] ||
-                ![s_local_sha256(data) isEqual:expected[@"sha256"]]) { assetValid = NO; break; }
+                ![s_local_sha256(data) isEqual:expected[@"sha256"]]) { valid = NO; break; }
             NSString *nativeKey = nil;
             if ([name isEqual:@"base.ogg"]) nativeKey = songID;
             else if ([name hasSuffix:@".aff"])
                 nativeKey = [NSString stringWithFormat:@"%@_%@", songID, name.stringByDeletingPathExtension];
-            // sub_10084DD38: audioOverride 使用 id+"_audio_"+difficulty，不能与 AFF 共用 id_index。
-            else if (difficultyFiles[name] && [name hasSuffix:@".ogg"])
-                nativeKey = [NSString stringWithFormat:@"%@_audio_%@", songID, name.stringByDeletingPathExtension];
             else nativeKey = [NSString stringWithFormat:@"%@_%@", songID, name];
             NSString *native = [nativeRoot stringByAppendingPathComponent:nativeKey];
             NSString *target = bundled ? [sourceRoot stringByAppendingPathComponent:name] :
@@ -385,28 +371,18 @@ void xrc_store_prepare_local_content(void) {
                         BOOL ours = [oldTarget isEqual:oldRelative] ||
                             ([oldTarget hasSuffix:bundleSuffix] &&
                              [oldTarget rangeOfString:@".app/XRCContent/"].location != NSNotFound);
-                        if (!ours) { assetValid = NO; break; }
-                        [links addObject:@{@"native":native, @"target":target, @"replace":@YES, @"mask":@(fileMask)}];
+                        if (!ours) { valid = NO; break; }
+                        [links addObject:@{@"native":native, @"target":target, @"replace":@YES}];
                     }
                 } else if (!S_ISREG(mode) || ![s_local_sha256([NSData dataWithContentsOfFile:native]) isEqual:expected[@"sha256"]]) {
-                    assetValid = NO; break;
+                    valid = NO; break;
                 }
             } else {
-                [links addObject:@{@"native":native, @"target":target, @"mask":@(fileMask)}];
+                [links addObject:@{@"native":native, @"target":target}];
             }
-          } while (0);
-          if (!assetValid) {
-              xrc_logw(XRCLC_CB, @"[local] %@/%@ 文件缺失、哈希不符或原生路径冲突 scope=%@",
-                       songID, name, fileMask ? @"difficulty" : @"song");
-              if (fileMask) mask &= ~fileMask;
-              else { valid = NO; break; }
-          }
         }
-        if (!mask) valid = NO;
         if (!valid) { xrc_logw(XRCLC_CB, @"[local] %@ 文件不完整、哈希不符或原生路径冲突，保留原下载判定", songID); continue; }
         for (NSDictionary *link in links) {
-            uint32_t fileMask = [link[@"mask"] unsignedIntValue];
-            if (fileMask && !(fileMask & mask)) continue;
             if ([link[@"replace"] boolValue] && unlink([link[@"native"] fileSystemRepresentation]) != 0) { valid = NO; break; }
             if (symlink([link[@"target"] fileSystemRepresentation], [link[@"native"] fileSystemRepresentation]) != 0) { valid = NO; break; }
         }

@@ -17,7 +17,7 @@ py -3 tools/add_video_placeholders.py `
 
 ```powershell
 py -3 tools/package_bundled_songs.py `
-  --base-ipa 'C:\path\to\internal-base-unsigned.ipa' `
+  --base-ipa 'C:\path\to\v13-base-unsigned.ipa' `
   --stage 'C:\path\to\stage-with-video-placeholders' `
   --songlist 'C:\path\to\cb\active\songs\songlist' `
   --cb-root 'C:\path\to\cb' `
@@ -26,8 +26,6 @@ py -3 tools/package_bundled_songs.py `
 
 首次安装时，插件会先把包内基础 `cb` 恢复到应用数据目录，然后在后台校验并映射包内歌曲。首次启动需要等待文件准备完成；如果途中退出，下次启动会继续复制未完成的文件。若已进入选曲界面但歌曲仍显示下载图标，等待片刻后彻底关闭并重开应用。进入游戏后开启“全部解锁”。IPA 内的 Bundle ID 是 `guy.guy.guy`，显示名 `ArcaeaXRC`；签名工具可能把实际安装 ID 改为带 Team ID 的形式。覆盖侧载时，签名后的实际 ID 应与已安装版本一致。
 
-省略 `--cb-root` 时，只生成适合已有基础 `cb` 内容的包。全新安装应提供 `--cb-root`。用于侧载的是最终输出的完整 IPA；基础 IPA 是打包中间文件，不含歌曲资源。
-
-v14 起，`audioOverride: true` 对应的 `<难度>.ogg` 必须一起打包。播放器通过 `<id>_audio_<难度>` 读取差分音频，普通难度仍通过 `<id>` 读取 `base.ogg`。旧暂存包没有这些文件时，先用更新后的导入工具从完整原始歌曲目录重新 prepare。
+省略 `--cb-root` 时，只生成适合已有基础 `cb` 内容的包。全新安装应提供 `--cb-root`。
 
 目前的占位视频只用于满足本地媒体加载，播放时是黑屏与静音，不能替代原曲目的演出。v13 暂时关闭了练习循环后的原生音符渲染重建，以避开已观察到的重建过程崩溃；循环后的弧线和长条显示可能不完整，重新进入谱面可恢复。
