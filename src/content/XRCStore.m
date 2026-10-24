@@ -324,6 +324,8 @@ void xrc_store_prepare_local_content(void) {
             if (index >= 0 && index < 5) {
                 mask |= 1u << index;
                 [names addObject:[NSString stringWithFormat:@"%d.aff", index]];
+                if ([difficulty[@"audioOverride"] boolValue])
+                    [names addObject:[NSString stringWithFormat:@"%d.ogg", index]];
             }
         }
         if (!mask) continue;
@@ -357,6 +359,10 @@ void xrc_store_prepare_local_content(void) {
             if ([name isEqual:@"base.ogg"]) nativeKey = songID;
             else if ([name hasSuffix:@".aff"])
                 nativeKey = [NSString stringWithFormat:@"%@_%@", songID, name.stringByDeletingPathExtension];
+            // 难度差分音频与谱面使用不同的原生文件名（sub_10084DD38）。
+            else if (name.length == 5 && [name hasSuffix:@".ogg"] &&
+                     [@"01234" containsString:[name substringToIndex:1]])
+                nativeKey = [NSString stringWithFormat:@"%@_audio_%@", songID, name.stringByDeletingPathExtension];
             else nativeKey = [NSString stringWithFormat:@"%@_%@", songID, name];
             NSString *native = [nativeRoot stringByAppendingPathComponent:nativeKey];
             NSString *target = bundled ? [sourceRoot stringByAppendingPathComponent:name] :
