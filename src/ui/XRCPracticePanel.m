@@ -11,6 +11,8 @@
 // 素材/字体/量纲：XRCTheme（游戏包内原文件）。
 #import "XRCPracticePanel.h"
 #import <objc/runtime.h>
+#import <PhotosUI/PhotosUI.h>
+#import <ImageIO/ImageIO.h>
 #include <string.h>
 #import "XRCFloatButton.h"
 #import "WHToast/WHToast.h"
@@ -31,6 +33,7 @@
 #include "XRCReplay.h"
 #import "XRCTimelineView.h"
 #import "XRCTheme.h"
+#include "XRCJudgeInput.h"
 
 // 开发构建专属区（release 下整段编译为空；常量与调用点统一以此门控）
 #define XRC_DEV_SECTION (XRC_DEBUG_BUILD)
@@ -62,7 +65,7 @@ static NSString *const kNoteDev =
 static NSString *const kNoteSpeed =
     @"点按 ±0.05，长按大步 ±0.25。音乐变速＝BGM 跟随速度且保持音高；关＝只改谱面钟。";
 
-@interface XRCPracticePanel ()
+@interface XRCPracticePanel () <PHPickerViewControllerDelegate, UIDocumentPickerDelegate>
 // 结构
 @property (nonatomic, strong) UIImageView *dim;
 @property (nonatomic, strong) UIImageView *glass;
@@ -105,6 +108,7 @@ static NSString *const kNoteSpeed =
 @property (nonatomic, assign) BOOL judgeDirty;
 @property (nonatomic, strong) NSArray<UIButton *> *logBtns;   // 仅开发构建会填充；属性常驻避免门控分裂
 @property (nonatomic, assign) NSInteger logSel;
+@property (nonatomic, weak) UIAlertController *judgeEditor;
 @end
 
 @implementation XRCPracticePanel
@@ -183,6 +187,11 @@ static NSString *const kNoteSpeed =
     self.glass.backgroundColor = [UIColor colorWithRed:37/255.0 green:23/255.0 blue:42/255.0
                                                  alpha:self.glass.image ? 0.55 : 0.62];
     self.glass.layer.cornerRadius = 12;   // 只圆底色；不 masksToBounds（纹理自带圆角软边）
+    self.glass.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.24].CGColor;
+    self.glass.layer.borderWidth = 0.5;
+    self.glass.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.glass.layer.shadowOpacity = 0.3;
+    self.glass.layer.shadowRadius = 16;
     self.glass.userInteractionEnabled = YES;   // UIImageView 默认不吃触摸
     [self addSubview:self.glass];
 
@@ -321,7 +330,7 @@ static NSString *const kNoteSpeed =
     [self.glass addSubview:self.navScroll];
     self.navBtns = [NSMutableArray array];
     {
-        NSArray *names = @[@"判定", @"解锁", @"网络", @"存储", @"诊断"];
+        NSArray *names = @[@"判定", @"解锁", @"网络", @"存储", @"诊断", @"外观"];
         CGFloat navW = xrc_theme_px(78), rowH = xrc_theme_px(46);
         for (int i = 0; i < (int)names.count; i++) {
             UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -332,6 +341,7 @@ static NSString *const kNoteSpeed =
                     forState:UIControlStateNormal];
             [b setTitleColor:XRC_TXT forState:UIControlStateSelected];
             b.layer.cornerRadius = 9;
+            [b setBackgroundImage:xrc_theme_img9(@"layouts/1080/pause/button_pressed.png", 50, 15, 50, 15) forState:UIControlStateSelected];
             b.tag = i;
             [b addTarget:self action:@selector(navTapped:) forControlEvents:UIControlEventTouchUpInside];
             [self.navScroll addSubview:b];
@@ -515,6 +525,10 @@ static NSString *const kNoteSpeed =
     CGFloat w = MAX(parent.bounds.size.width, xrc_theme_px(160));
     UIView *r = [[UIView alloc] initWithFrame:CGRectMake(0, y, w, xrc_theme_px(36))];
     r.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    r.backgroundColor = [UIColor colorWithWhite:1 alpha:0.055];
+    r.layer.cornerRadius = xrc_theme_px(5);
+    r.layer.borderWidth = 0.5;
+    r.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.12].CGColor;
     // 标题右侧给控件留位：宽行留 150 设计px；窄列（速度列）按列宽收缩，否则标题被
     // 挤成省略号（"音乐变速/回跳重播"曾如此）。
     CGFloat reserve = (w >= xrc_theme_px(240)) ? xrc_theme_px(150) : xrc_theme_px(96);
@@ -524,6 +538,8 @@ static NSString *const kNoteSpeed =
     l.textColor = [UIColor colorWithRed:244/255.0 green:241/255.0 blue:250/255.0 alpha:1.0];
     l.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [r addSubview:l];
+    l.adjustsFontSizeToFitWidth = YES;
+    l.minimumScaleFactor = 0.8;
     if (note.length) {
         [r addGestureRecognizer:[[UILongPressGestureRecognizer alloc]
                                     initWithTarget:self action:@selector(rowNote:)]];
@@ -707,8 +723,17 @@ static NSString *const kNoteSpeed =
                                         plus:^{ [ws judgeStep:idx delta:+5]; }
                                         note:kNoteJudge];
             [self.judgeVals addObject:vl];
+            vl.tag = i;
+            vl.userInteractionEnabled = YES;
+            vl.backgroundColor = [UIColor colorWithWhite:1 alpha:0.09];
+            vl.layer.cornerRadius = 4;
+            vl.clipsToBounds = YES;
+            [vl addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(editJudgeNumbers:)]];
             y += xrc_theme_px(38);
         }
+        [self actionRowIn:self.pane y:y title:@"直接输入四档" value:@"毫秒 · 点按编辑"
+                   block:^{ [self editJudgeNumbers:nil]; } note:@"点击任意数值也可打开输入框，填好后点应用。"];
+        y += xrc_theme_px(38);
         self.stAutoplay = [self toggleRowIn:self.pane y:y title:@"自动演奏" on:xrc_judge_autoplay()
                                       block:^{ [self toggleAutoplay]; } note:kNoteJudge];
         y += xrc_theme_px(38);
@@ -789,6 +814,23 @@ static NSString *const kNoteSpeed =
         self.storeStat = [self statLineIn:self.pane y:y text:xrc_store_cb_status()];
         y += xrc_theme_px(22);
         y += [self hintLineIn:self.pane y:y text:kNoteStore];
+    } else if (t == 5) {   // 外观
+        self.paneHint.text = @"悬浮按钮 · 本机保存，即时生效";
+        __weak typeof(self) ws = self;
+        id caption = xrc_config_dict()[@"floatingButtonText"];
+        [self actionRowIn:self.pane y:y title:@"按钮文字" value:[caption isKindOfClass:NSString.class] ? caption : @"XRC"
+                   block:^{ [ws editButtonCaption]; } note:@"留空可隐藏文字。"];
+        y += xrc_theme_px(38);
+        [self actionRowIn:self.pane y:y title:@"从照片选择按钮图" value:@"选择照片"
+                   block:^{ [ws chooseButtonPhoto]; } note:nil];
+        y += xrc_theme_px(38);
+        [self actionRowIn:self.pane y:y title:@"从文件选择按钮图" value:@"PNG / JPEG"
+                   block:^{ [ws chooseButtonFile]; } note:nil];
+        y += xrc_theme_px(38);
+        [self actionRowIn:self.pane y:y title:@"恢复默认按钮" value:@"恢复图标和文字"
+                   block:^{ [ws resetButtonAppearance]; } note:nil];
+        y += xrc_theme_px(40);
+        y += [self hintLineIn:self.pane y:y text:@"建议使用方形透明图片。导入后自动缩小保存，覆盖侧载后仍保留。版本信息可在面板标头查看。"];
     } else {   // 诊断
         self.paneHint.text = @"日志 xrcdemo.log";
         NSMutableArray *chips = [NSMutableArray array];
@@ -1044,7 +1086,7 @@ static NSString *const kNoteSpeed =
 - (void)judgeStep:(NSInteger)idx delta:(NSInteger)d {
     if (idx < 0 || idx >= (int)self.judgeVals.count) return;
     UILabel *l = self.judgeVals[idx];
-    NSInteger v = MAX(1, [l.text integerValue] + d);
+    NSInteger v = MIN(2000, MAX(1, [l.text integerValue] + d));
     l.text = [NSString stringWithFormat:@"%ld", (long)v];
     self.judgeDirty = YES;
 }
@@ -1057,10 +1099,8 @@ static NSString *const kNoteSpeed =
         return;
     }
     int v[4];
-    for (int i = 0; i < 4; i++) v[i] = MAX(1, [self.judgeVals[i].text intValue]);
-    if (v[1] <= v[0]) v[1] = v[0] + 1;
-    if (v[2] <= v[1]) v[2] = v[1] + 1;
-    if (v[3] <= v[2]) v[3] = v[2] + 1;
+    for (int i = 0; i < 4; i++) v[i] = [self.judgeVals[i].text intValue];
+    xrc_judge_clamp_windows(v);
     for (int i = 0; i < 4; i++) self.judgeVals[i].text = [NSString stringWithFormat:@"%d", v[i]];
     xrc_judge_set_windows(v[0], v[1], v[2], v[3]);
     xrc_config_t c; xrc_config_load(&c);
@@ -1143,6 +1183,132 @@ static NSString *const kNoteSpeed =
                     duration:1.6 finishHandler:^{}];
     }
     [self refresh];
+}
+
+- (UIViewController *)editorPresenter {
+    UIViewController *vc = [self keyWindow].rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    return vc;
+}
+
+- (BOOL)judgeInputValid:(UIAlertController *)alert {
+    if (alert.textFields.count != 4) return NO;
+    const char *text[4]; int values[4];
+    for (int i = 0; i < 4; i++) text[i] = alert.textFields[i].text.UTF8String;
+    return xrc_judge_parse_windows(text, values) != 0;
+}
+
+- (void)judgeInputChanged:(UITextField *)sender {
+    UIAlertController *a = self.judgeEditor;
+    a.actions.lastObject.enabled = [self judgeInputValid:a];
+    a.message = [self judgeInputValid:a] ? @"单位 ms。填入后点击面板上的“应用”生效。" : @"请输入 1–2000 的整数，且 Max < Pure < Far < Lost。";
+}
+
+- (void)editJudgeNumbers:(UITapGestureRecognizer *)sender {
+    if (self.judgeVals.count != 4) return;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"判定区间 ±ms" message:@"四档数值需严格递增，填入后点应用。" preferredStyle:UIAlertControllerStyleAlert];
+    NSArray *names = @[@"Max", @"Pure", @"Far", @"Lost"];
+    for (NSInteger i = 0; i < 4; i++) {
+        [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+            tf.placeholder = names[i]; tf.text = self.judgeVals[i].text;
+            tf.keyboardType = UIKeyboardTypeNumberPad;
+            tf.accessibilityLabel = [names[i] stringByAppendingString:@" 毫秒"];
+            [tf addTarget:self action:@selector(judgeInputChanged:) forControlEvents:UIControlEventEditingChanged];
+        }];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak UIAlertController *wa = a;
+    [a addAction:[UIAlertAction actionWithTitle:@"填入" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        UIAlertController *alert = wa;
+        if (![self judgeInputValid:alert] || self.judgeVals.count != 4) return;
+        for (NSInteger i = 0; i < 4; i++) self.judgeVals[i].text = [NSString stringWithFormat:@"%ld", (long)alert.textFields[i].text.integerValue];
+        self.judgeDirty = YES;
+    }]];
+    self.judgeEditor = a;
+    [self judgeInputChanged:nil];
+    NSInteger index = sender ? sender.view.tag : 0;
+    [[self editorPresenter] presentViewController:a animated:YES completion:^{
+        [a.textFields[MAX(0, MIN(3, index))] becomeFirstResponder];
+    }];
+}
+
+- (void)editButtonCaption {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"悬浮按钮文字" message:@"最多 16 字；留空隐藏文字。" preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        id text = xrc_config_dict()[@"floatingButtonText"];
+        tf.text = [text isKindOfClass:NSString.class] ? text : @"XRC";
+        tf.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [a addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak UIAlertController *wa = a;
+    [a addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *text = wa.textFields.firstObject.text ?: @"";
+        if (text.length > 16) { [WHToast showMessage:@"文字过长，请限制在 16 字以内" duration:1.5 finishHandler:nil]; return; }
+        NSMutableDictionary *prefs = xrc_config_dict(); prefs[@"floatingButtonText"] = text;
+        xrc_config_write_dict(prefs);
+        [[XRCFloatButton shared] reloadAppearance]; [self rebuildPane];
+    }]];
+    [[self editorPresenter] presentViewController:a animated:YES completion:nil];
+}
+
+- (void)chooseButtonPhoto {
+    PHPickerConfiguration *config = [[PHPickerConfiguration alloc] init];
+    config.selectionLimit = 1; config.filter = PHPickerFilter.imagesFilter;
+    PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:config];
+    picker.delegate = self;
+    [[self editorPresenter] presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+    NSItemProvider *provider = results.firstObject.itemProvider;
+    if (!provider) return;
+    [provider loadDataRepresentationForTypeIdentifier:@"public.image" completionHandler:^(NSData *data, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self saveButtonImageData:data]; });
+    }];
+}
+
+- (void)chooseButtonFile {
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.image"] inMode:UIDocumentPickerModeImport];
+    picker.delegate = self; picker.allowsMultipleSelection = NO;
+    [[self editorPresenter] presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    NSURL *url = urls.firstObject; if (!url) return;
+    BOOL scoped = [url startAccessingSecurityScopedResource];
+    NSNumber *size = nil; [url getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+    NSData *data = size.unsignedLongLongValue <= 20 * 1024 * 1024 ? [NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:nil] : nil;
+    if (scoped) [url stopAccessingSecurityScopedResource];
+    [self saveButtonImageData:data];
+}
+
+- (void)saveButtonImageData:(NSData *)data {
+    if (!data.length || data.length > 20 * 1024 * 1024) {
+        [WHToast showMessage:@"请选择不超过 20 MB 的有效图片" duration:1.8 finishHandler:nil]; return;
+    }
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    NSDictionary *options = @{(__bridge id)kCGImageSourceCreateThumbnailFromImageAlways:@YES,
+                              (__bridge id)kCGImageSourceThumbnailMaxPixelSize:@512,
+                              (__bridge id)kCGImageSourceCreateThumbnailWithTransform:@YES};
+    CGImageRef image = source ? CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options) : NULL;
+    if (source) CFRelease(source);
+    if (!image) { [WHToast showMessage:@"无法读取这张图片" duration:1.5 finishHandler:nil]; return; }
+    NSData *png = UIImagePNGRepresentation([UIImage imageWithCGImage:image]); CGImageRelease(image);
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/xrc-button.png"];
+    if (![png writeToFile:path atomically:YES]) { [WHToast showMessage:@"图片保存失败，原设置已保留" duration:1.5 finishHandler:nil]; return; }
+    [[XRCFloatButton shared] reloadAppearance]; [self rebuildPane];
+    [WHToast showMessage:@"按钮图片已更新" duration:1.2 finishHandler:nil];
+}
+
+- (void)resetButtonAppearance {
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/xrc-button.png"];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if ([fm fileExistsAtPath:path] && ![fm removeItemAtPath:path error:nil]) {
+        [WHToast showMessage:@"恢复失败，请稍后重试" duration:1.5 finishHandler:nil]; return;
+    }
+    NSMutableDictionary *prefs = xrc_config_dict(); [prefs removeObjectForKey:@"floatingButtonText"];
+    xrc_config_write_dict(prefs); [[XRCFloatButton shared] reloadAppearance]; [self rebuildPane];
 }
 
 - (void)editNetBase {

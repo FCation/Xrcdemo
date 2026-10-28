@@ -15,5 +15,6 @@
 
 - (void)attachToWindow:(UIWindow *)window;
 - (void)setHiddenState:(BOOL)hidden;
+- (void)reloadAppearance;
 
 @end

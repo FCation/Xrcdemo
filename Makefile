@@ -40,6 +40,7 @@ xrcdemo_CFLAGS += -DXRC_DEBUG_BUILD=$(XRC_DEBUG)
 xrcdemo_CFLAGS += -DXRC_ALLOW_OFFICIAL_NET=$(XRC_ALLOW_OFFICIAL_NET)
 
 xrcdemo_LIBRARIES = substrate
+xrcdemo_FRAMEWORKS += PhotosUI ImageIO
 xrcdemo_LOGOSFLAGS = -c generator=MobileSubstrate
 xrcdemo_LDFLAGS = -Xlinker -not_for_dyld_shared_cache
 
